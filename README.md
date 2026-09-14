@@ -15,19 +15,19 @@ stored, in a folder you control.
 
 ## 1. How the "update" actually works
 
-Two independent levers, used together:
+One lever does the work; a second is held in reserve.
 
-| Lever | Effect | Why both |
+| Lever | Effect | Status |
 |---|---|---|
-| **Resume re-upload** | Re-uploading the same PDF bumps the profile's *last updated* timestamp | Primary signal. Cheap, no visible change to your profile. |
-| **Headline rotation** | Cycles through N user-written variants of the resume headline | Backstop. If Naukri ever stops counting an identical re-upload as a change, a genuinely different field value still does. |
+| **Resume re-upload** | Re-uploading the same PDF moves the profile's *last updated* timestamp | **Primary.** Measured against a live account on 2026-09-14: `22Jul , 2026` → `Today`, with a byte-identical file. No visible change to the profile. |
+| **Headline rotation** | Cycles through N user-written variants of the resume headline | **Backstop, off by default.** Only needed if Naukri ever stops counting an identical re-upload as a change. |
 
-Headline variants are written by the user and must all be truthful descriptions of the
-same person — this rotates phrasing, not facts.
+Because the primary lever is confirmed, rotation stays unimplemented (§14.2): the
+headline sits behind an edit modal, and that work is not worth doing until the backstop
+is actually needed.
 
-> **To verify in Phase 0:** whether a byte-identical resume re-upload moves the
-> timestamp on its own. If it does, headline rotation becomes optional and can default
-> off. Do not assume — measure it against a real account.
+Headline variants, if ever enabled, are written by the user and must all be truthful
+descriptions of the same person — this rotates phrasing, not facts.
 
 ---
 
@@ -69,14 +69,18 @@ comparing `now` against stored state. Consequences:
 
 | Module | Responsibility |
 |---|---|
-| `cli.py` | Entry points: `login`, `tick`, `run`, `dashboard`, `setup`, `doctor` |
+| `cli.py` | Entry points: `login`, `run`, `tick`, `status`, `config`, `doctor`, `setup`, `install-task`, `dashboard` |
 | `scheduler.py` | Due/overdue calculation, jitter, retry backoff, quiet hours. Pure functions over an injected clock — trivially unit-testable. |
 | `driver/session.py` | Browser context lifecycle, `storage_state` load/save, login detection |
 | `driver/profile.py` | The Naukri page interactions: upload resume, set headline, read back last-updated |
 | `driver/selectors.py` | Every CSS/XPath selector in one file, each with a fallback chain |
 | `store.py` | SQLite access. Plain `sqlite3`, no ORM. |
 | `dashboard/` | FastAPI app + Jinja templates + hand-rolled SVG chart |
-| `lock.py` | Single-instance file lock so a manual run and a tick can't collide |
+| `lock.py` | Single-instance OS file lock so a manual run and a tick can't collide |
+| `runner.py` | One run, start to terminal state. Never raises. |
+| `results.py` | `Status` / `ErrorKind` / `RunResult`, shaped for the SQLite schema |
+| `scheduling.py` | `schtasks` registration and query parsing |
+| `diagnostics.py` | The checks behind `doctor` and the setup checklist |
 
 ---
 
