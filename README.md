@@ -13,6 +13,24 @@ stored, in a folder you control.
 
 ---
 
+## Contents
+
+**Using it**
+&nbsp;&nbsp;[11. Setup](#11-setup) · [9. Dashboard](#9-dashboard) · [13. Project layout](#13-project-layout)
+
+**How it works**
+&nbsp;&nbsp;[1. How the "update" actually works](#1-how-the-update-actually-works)
+&nbsp;&nbsp;[2. Architecture](#2-architecture) · [3. Run lifecycle](#3-run-lifecycle) · [4. Scheduling semantics](#4-scheduling-semantics)
+&nbsp;&nbsp;[5. Data model](#5-data-model-sqlite) · [10. Tech choices](#10-tech-choices)
+
+**Risk and failure**
+&nbsp;&nbsp;[6. Security model](#6-security-model) · [7. Anti-detection posture](#7-anti-detection-posture) · [8. Failure modes](#8-failure-modes)
+
+**Project state**
+&nbsp;&nbsp;[12. Build order](#12-build-order) · [14. Open questions](#14-open-questions)
+
+---
+
 ## 1. How the "update" actually works
 
 One lever does the work; a second is held in reserve.
@@ -22,7 +40,7 @@ One lever does the work; a second is held in reserve.
 | **Resume re-upload** | Re-uploading the same PDF moves the profile's *last updated* timestamp | **Primary.** Measured against a live account on 2026-09-14: `22Jul , 2026` → `Today`, with a byte-identical file. No visible change to the profile. |
 | **Headline rotation** | Cycles through N user-written variants of the resume headline | **Backstop, off by default.** Only needed if Naukri ever stops counting an identical re-upload as a change. |
 
-Because the primary lever is confirmed, rotation stays unimplemented (§14.2): the
+Because the primary lever is confirmed, rotation stays unimplemented (see [open question 2](#14-open-questions)): the
 headline sits behind an edit modal, and that work is not worth doing until the backstop
 is actually needed.
 
@@ -105,7 +123,11 @@ comparing `now` against stored state. Consequences:
 
 Every run ends in exactly one terminal state, always with a screenshot:
 
-`SUCCESS` · `FAILED` · `NEEDS_LOGIN` · `SKIPPED_NOT_DUE` · `SKIPPED_LOCKED` · `DRY_RUN`
+`SUCCESS` · `FAILED` · `NEEDS_LOGIN` · `SKIPPED_LOCKED` · `DRY_RUN`
+
+A tick that is simply not due records nothing at all — it never opens a browser, so there
+is no run to write down. Only a tick that wanted to run and could not (`SKIPPED_LOCKED`)
+leaves a row.
 
 **Read-back verification matters.** A screenshot proves a page was reached; parsing the
 profile's own "last updated" string proves the change registered. A run that uploads
@@ -113,7 +135,7 @@ without moving that timestamp is a *silent failure* — the worst possible outco
 this product, since the user believes they're covered while their profile sinks.
 
 **Verify by assertion, not by comparison.** `.mod-date-val` renders as the literal string
-`Today` once updated (confirmed in Phase 0 — see §14). So the check is:
+`Today` once updated (confirmed in Phase 0 — see [Open questions](#14-open-questions)). So the check is:
 
 ```
 success  <=>  .mod-date-val == "Today"   (after reload)
@@ -293,14 +315,14 @@ Single local page at `http://127.0.0.1:8765`:
 - **Status** — next run time, last result, staleness / re-login banners
 - **Activity chart** — GitHub-style contribution grid, one cell per day, coloured by
   status, with month labels so the window is readable. Hand-rolled inline SVG; no chart
-  library, no CDN (offline must work, and outbound requests would violate §6). A test
+  library, no CDN (offline must work, and outbound requests would violate the [security model](#6-security-model)). A test
   asserts the rendered page contains no external reference at all.
 - **Streak** — consecutive fresh days. Yesterday still counts: with a 24h interval plus
   jitter, today's run may not have fired yet, and resetting at midnight would be both
   wrong and dispiriting.
 - **Run history** — table with status, trigger, error, screenshot thumbnail
-- **Settings** — interval, resume path, headline variants, quiet hours
-- **Setup checklist** — first-run wizard, each step self-verifying (§11)
+- **Settings** — interval, resume path, quiet hours, headed-mode toggle
+- **Setup checklist** — first-run wizard, each step self-verifying (see [Setup](#11-setup))
 - **Run now** / **Dry run** buttons — a run takes ~30s of browser time, far too long to
   hold an HTTP request open, so the work goes on a thread and the page polls
   `/api/status` until it finishes.
@@ -382,7 +404,8 @@ item is checked rather than taken on trust.
 
 1. **Sign in** — `naukri-autopilot login`. A real browser window opens and you log in
    yourself; nothing types your password. Bundled Chromium cannot complete a Google
-   sign-in (§7), so Brave, Chrome or Edge is used when present.
+   sign-in (see [Anti-detection posture](#7-anti-detection-posture)), so Brave,
+   Chrome or Edge is used when present.
 2. **Point at your resume** — in the dashboard's Settings, or
    `naukri-autopilot config resume_path "C:/path/to/cv.pdf"`. Keep it somewhere
    permanent; `doctor` warns if it lives in Downloads.
@@ -397,7 +420,30 @@ have an assistant walk them through it.
 
 ## 12. Build order
 
-### Running Phase 0 today
+All five build phases are complete. **133 tests**, none of which need the network.
+
+| Phase | Deliverable | Status |
+|---|---|---|
+| **0. Recon** | `scripts/phase0_recon.py` — login, probe, measure | ✅ Session reuse confirmed (180-day cookies), selectors captured, [open question 1](#14-open-questions) answered YES |
+| **1. Core driver** | `driver/` + `selectors.py`, dry-run mode, screenshots, read-back verification | ✅ `run --dry-run` passes against a live account |
+| **2. State + scheduler** | SQLite, `scheduler.py`, `tick`, file lock, `status`, `config` | ✅ Due / overdue / catch-up / jitter / quiet-hours / retry all covered against a fake clock |
+| **4. Setup & scheduling** | `install-task`, `doctor`, `setup` checklist | ✅ `schtasks` arguments and query parsing covered without touching the real scheduler |
+| **3. Dashboard** | Status, history, chart, settings, checklist | ✅ Page verified to make zero outbound requests |
+| **5. Hardening** | Windows toast on `NEEDS_LOGIN`, DPAPI at rest, structured logs | ⬜ Not started. Retry ladder, staleness alerts and screenshot retention already shipped in phases 2–4. |
+
+Phases 3 and 4 were built in that order — 4 first — because scheduling is what makes the
+tool autonomous, while the dashboard makes it pleasant. The table is numbered by phase,
+not by the order they were done.
+
+Phase 0 was the one that could have invalidated the whole design. It ran before anything
+permanent was written: had identical re-uploads *not* moved the timestamp, headline
+rotation would have become the primary mechanism, changing the settings UI, the
+validation rules, and the minimum number of variants a user must supply.
+
+### Appendix: re-running recon after a Naukri redesign
+
+`SELECTOR_MISS` in the run history means Naukri changed its markup. The recon script is
+how you find the new selectors:
 
 ```
 .venv\Scripts\python scripts\phase0_recon.py login
@@ -406,32 +452,12 @@ have an assistant walk them through it.
 ```
 
 `login` opens a real window and waits while you sign in — nothing types your password.
-`probe` writes a dated report, screenshot and full HTML to `data/debug/`. `measure` is
-the experiment for §14.1 and **writes to your live profile**; everything before it is
-read-only.
+`probe` is read-only: it writes a dated report, screenshot and full HTML to `data/debug/`.
+`measure` **writes to your live profile**, and is only needed if you have to re-confirm
+that a re-upload still moves the timestamp.
 
-`measure` prints one of three verdicts — YES (design holds), NO (headline rotation is
-promoted to primary), or INCONCLUSIVE (no readable timestamp, so §14.3 must be answered
-first). It also drops a `*-verdict.json` next to the screenshots as the record.
-
-The recon script is meant to be *edited*. If the upload control turns out to sit behind
-a click, add the click — that discovery is the deliverable, not the script.
-
-
-
-| Phase | Deliverable | Done when |
-|---|---|---|
-| **0. Recon** ✅ | `scripts/phase0_recon.py` — login, probe, measure | **Done 2026-09-14.** Session reuse confirmed (180-day cookies); selectors captured; §14.1 answered YES |
-| **1. Core driver** ✅ | `driver/` + `selectors.py`, dry-run mode, screenshots, read-back verification | **Done 2026-09-14.** `run --dry-run` passes against a live account; 20 tests green |
-| **2. State + scheduler** ✅ | SQLite, `scheduler.py`, `tick`, file lock, `status`, `config` | **Done 2026-09-14.** 76 tests green, covering due / overdue / catch-up / jitter / quiet-hours / retry against a fake clock |
-| **3. Dashboard** ✅ | Status, history, chart, settings, checklist | **Done 2026-09-14.** 133 tests green; page verified to make zero outbound requests |
-| **4. Setup & scheduling** ✅ | `install-task`, `doctor`, `setup` checklist | **Done 2026-09-14.** 103 tests green; schtasks args and query parsing covered without touching the real scheduler |
-| **5. Hardening** | Retry ladder, staleness alerts, Windows toast on `NEEDS_LOGIN`, screenshot retention, DPAPI, structured logs | Survives: revoked session, offline, renamed resume, Naukri DOM change |
-
-Phase 0 is the one that can invalidate the design. Do it before writing anything
-permanent — if identical re-uploads don't bump the timestamp, headline rotation stops
-being a backstop and becomes the primary mechanism, which changes the settings UI, the
-validation rules, and the minimum number of variants a user must supply.
+The recon script is meant to be *edited*. If the upload control moves behind a click, add
+the click — that discovery is the deliverable, not the script.
 
 ---
 
@@ -439,16 +465,37 @@ validation rules, and the minimum number of variants a user must supply.
 
 ```
 naukari_autopilot/
-├─ src/naukri_autopilot/
-│  ├─ cli.py  scheduler.py  store.py  lock.py  config.py
-│  ├─ driver/      session.py  profile.py  selectors.py
-│  └─ dashboard/   app.py  templates/  static/
-├─ tests/          test_scheduler.py  test_store.py
-├─ data/           state.db  screenshots/  debug/     (gitignored)
+├─ setup.ps1                   one-command install (PowerShell)
+├─ setup.sh                    one-command install (Git Bash / WSL)
 ├─ pyproject.toml  README.md  CLAUDE.md
+│
+├─ src/naukri_autopilot/
+│  ├─ cli.py                   every command
+│  ├─ runner.py                one run, start to terminal state. Never raises.
+│  ├─ scheduler.py             pure due/overdue/jitter/retry logic
+│  ├─ store.py                 SQLite: runs, settings, headlines
+│  ├─ scheduling.py            schtasks registration
+│  ├─ diagnostics.py           the checks behind `doctor`
+│  ├─ results.py               Status / ErrorKind / RunResult
+│  ├─ lock.py  config.py
+│  ├─ driver/
+│  │  ├─ selectors.py          EVERY selector, fallback-chained
+│  │  ├─ profile.py            page operations
+│  │  └─ session.py            browser lifecycle, login detection
+│  └─ dashboard/
+│     ├─ app.py                FastAPI routes
+│     ├─ chart.py              hand-rolled SVG activity grid
+│     ├─ templates/index.html
+│     └─ static/style.css
+│
+├─ scripts/phase0_recon.py     throwaway recon tool (see appendix above)
+├─ tests/                      133 tests; fixtures are synthetic
+└─ data/                       state.db, screenshots/, debug/   (gitignored)
 ```
 
-Session state lives in `%LOCALAPPDATA%`, not `data/` — see §6.
+Session state lives in `%LOCALAPPDATA%\NaukriAutopilot\`, **not** `data/` — see
+[Security model](#6-security-model). Test fixtures are synthetic by rule: a real page
+capture contains the user's name, location and resume filename.
 
 ---
 
@@ -458,9 +505,10 @@ Session state lives in `%LOCALAPPDATA%`, not `data/` — see §6.
    Measured 2026-09-14: `22Jul , 2026` → `Today`, resume date `Feb 23` → `Sep 14`, with a
    byte-identical file. Re-upload is the primary lever; headline rotation stays an
    optional backstop and can default **off**.
-2. Naukri's headline character limit — **still open.** The headline renders as a plain
-   `div`, not an editable field, so the limit only becomes visible once the edit modal is
-   open. Phase 1 must drive that modal.
+2. Naukri's headline character limit — **still open, and not blocking.** The headline
+   renders as a plain `div`, not an editable field, so the limit is only visible once the
+   edit modal is open. Since open question 1 came back YES, rotation is an unused
+   backstop and driving that modal is deferred indefinitely.
 3. ~~Is there a visible "profile last updated" string?~~ **Answered — yes, two of them.**
    See below.
 4. Is there a rate limit or cooldown on resume uploads?
@@ -484,7 +532,7 @@ literal string `Today` — not `14Sep , 2026`. Older profiles render an absolute
 treat any non-`Today` value as "needs updating" rather than enumerating the vocabulary.
 
 This is why verification asserts `== "Today"` instead of diffing before against after
-(§3). Day granularity means a same-day second run shows no diff at all, and a
+(see [Run lifecycle](#3-run-lifecycle)). Day granularity means a same-day second run shows no diff at all, and a
 comparison-based check would call a perfectly good run `FAILED`.
 
 **Upload controls, and a trap:**
@@ -499,13 +547,14 @@ first draft of the recon script did — can put a PDF into the photo field. Ever
 now addresses them by id, and the driver must do the same.
 
 **Headline** lives in a `div` with an adjacent edit icon, so changing it means driving a
-modal, not typing into an inline field. That is more work than assumed and lands in
-Phase 1.
+modal, not typing into an inline field. More work than assumed — and, once question 1
+came back YES, work that no longer needs doing.
 
 **Browser:** bundled Chromium is unusable for OAuth sign-in — Google refuses it outright.
-Brave works. See §7.
+Brave works. See [Anti-detection posture](#7-anti-detection-posture).
 
 ---
 
-*Note: this folder is spelled `naukari_autopilot`; the site is `naukri.com`. Worth
-renaming before `git init` if you'd rather not carry the typo forever.*
+*Note: the local folder is spelled `naukari_autopilot`, while the GitHub repo and the
+Python package are both `naukri_autopilot`. Only the folder name carries the typo, and
+nothing depends on it — renaming the directory is safe whenever you feel like it.*
