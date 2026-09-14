@@ -15,19 +15,19 @@ stored, in a folder you control.
 
 ## 1. How the "update" actually works
 
-Two independent levers, used together:
+One lever does the work; a second is held in reserve.
 
-| Lever | Effect | Why both |
+| Lever | Effect | Status |
 |---|---|---|
-| **Resume re-upload** | Re-uploading the same PDF bumps the profile's *last updated* timestamp | Primary signal. Cheap, no visible change to your profile. |
-| **Headline rotation** | Cycles through N user-written variants of the resume headline | Backstop. If Naukri ever stops counting an identical re-upload as a change, a genuinely different field value still does. |
+| **Resume re-upload** | Re-uploading the same PDF moves the profile's *last updated* timestamp | **Primary.** Measured against a live account on 2026-09-14: `22Jul , 2026` → `Today`, with a byte-identical file. No visible change to the profile. |
+| **Headline rotation** | Cycles through N user-written variants of the resume headline | **Backstop, off by default.** Only needed if Naukri ever stops counting an identical re-upload as a change. |
 
-Headline variants are written by the user and must all be truthful descriptions of the
-same person — this rotates phrasing, not facts.
+Because the primary lever is confirmed, rotation stays unimplemented (§14.2): the
+headline sits behind an edit modal, and that work is not worth doing until the backstop
+is actually needed.
 
-> **To verify in Phase 0:** whether a byte-identical resume re-upload moves the
-> timestamp on its own. If it does, headline rotation becomes optional and can default
-> off. Do not assume — measure it against a real account.
+Headline variants, if ever enabled, are written by the user and must all be truthful
+descriptions of the same person — this rotates phrasing, not facts.
 
 ---
 
@@ -69,14 +69,18 @@ comparing `now` against stored state. Consequences:
 
 | Module | Responsibility |
 |---|---|
-| `cli.py` | Entry points: `login`, `tick`, `run`, `dashboard`, `setup`, `doctor` |
+| `cli.py` | Entry points: `login`, `run`, `tick`, `status`, `config`, `doctor`, `setup`, `install-task`, `dashboard` |
 | `scheduler.py` | Due/overdue calculation, jitter, retry backoff, quiet hours. Pure functions over an injected clock — trivially unit-testable. |
 | `driver/session.py` | Browser context lifecycle, `storage_state` load/save, login detection |
 | `driver/profile.py` | The Naukri page interactions: upload resume, set headline, read back last-updated |
 | `driver/selectors.py` | Every CSS/XPath selector in one file, each with a fallback chain |
 | `store.py` | SQLite access. Plain `sqlite3`, no ORM. |
 | `dashboard/` | FastAPI app + Jinja templates + hand-rolled SVG chart |
-| `lock.py` | Single-instance file lock so a manual run and a tick can't collide |
+| `lock.py` | Single-instance OS file lock so a manual run and a tick can't collide |
+| `runner.py` | One run, start to terminal state. Never raises. |
+| `results.py` | `Status` / `ErrorKind` / `RunResult`, shaped for the SQLite schema |
+| `scheduling.py` | `schtasks` registration and query parsing |
+| `diagnostics.py` | The checks behind `doctor` and the setup checklist |
 
 ---
 
@@ -287,13 +291,23 @@ that a one-file fix instead of an archaeology expedition.
 Single local page at `http://127.0.0.1:8765`:
 
 - **Status** — next run time, last result, staleness / re-login banners
-- **Activity chart** — GitHub-style contribution grid, one cell per day, colored by
-  status. Hand-rolled inline SVG; no chart library, no CDN (offline must work, and
-  outbound requests would violate the privacy claim in §6).
+- **Activity chart** — GitHub-style contribution grid, one cell per day, coloured by
+  status, with month labels so the window is readable. Hand-rolled inline SVG; no chart
+  library, no CDN (offline must work, and outbound requests would violate §6). A test
+  asserts the rendered page contains no external reference at all.
+- **Streak** — consecutive fresh days. Yesterday still counts: with a 24h interval plus
+  jitter, today's run may not have fired yet, and resetting at midnight would be both
+  wrong and dispiriting.
 - **Run history** — table with status, trigger, error, screenshot thumbnail
 - **Settings** — interval, resume path, headline variants, quiet hours
 - **Setup checklist** — first-run wizard, each step self-verifying (§11)
-- **Run now** / **Dry run** buttons
+- **Run now** / **Dry run** buttons — a run takes ~30s of browser time, far too long to
+  hold an HTTP request open, so the work goes on a thread and the page polls
+  `/api/status` until it finishes.
+
+Screenshots are served **by run id, never by path**: the id is looked up and the resolved
+path re-checked to be inside the screenshot directory. Taking a filename from the URL
+would be a path-traversal hole straight into the user's filesystem.
 
 ---
 
@@ -306,7 +320,8 @@ Single local page at `http://127.0.0.1:8765`:
 | SQLite via stdlib `sqlite3` | Single file, zero setup, survives crashes. An ORM would be dead weight at this size. |
 | FastAPI + uvicorn + Jinja2 | Local-only dashboard; typed routes for free. Flask would be equally fine. |
 | No chart/JS libraries | Offline-capable, and keeps the no-outbound-calls promise literally true. |
-| Windows Task Scheduler | Native, survives reboot, no background process to babysit. Registered via `schtasks` at user scope — no admin prompt. |
+| Windows Task Scheduler | Native, survives reboot, no background process to babysit. Registered via `schtasks` at user scope — no admin prompt, no stored password. |
+| `pythonw.exe` for the tick | `python.exe` would flash a console window 96 times a day, which is the fastest way to get a background tool uninstalled. Costs a console to log to, hence `data/tick.log` as a last resort. |
 
 ---
 
@@ -325,7 +340,7 @@ Each step verifies itself and refuses to tick green on the user's say-so:
    page, not hardcoded — see §14)*
 7. **Pick interval** — 12 / 24 / 48 h
 8. **Dry run** — full flow, no writes. Proves selectors resolve before the user trusts it.
-9. **Register schedule** — `schtasks /create` for the 15-minute tick
+9. **Register schedule** — `naukri-autopilot install-task` (user scope, no admin prompt)
 10. **First real run** — user watches it succeed and sees the screenshot
 
 Plus a copy-pasteable AI-assist prompt (per the product spec) for users who would rather
@@ -362,8 +377,8 @@ a click, add the click — that discovery is the deliverable, not the script.
 | **0. Recon** ✅ | `scripts/phase0_recon.py` — login, probe, measure | **Done 2026-09-14.** Session reuse confirmed (180-day cookies); selectors captured; §14.1 answered YES |
 | **1. Core driver** ✅ | `driver/` + `selectors.py`, dry-run mode, screenshots, read-back verification | **Done 2026-09-14.** `run --dry-run` passes against a live account; 20 tests green |
 | **2. State + scheduler** ✅ | SQLite, `scheduler.py`, `tick`, file lock, `status`, `config` | **Done 2026-09-14.** 76 tests green, covering due / overdue / catch-up / jitter / quiet-hours / retry against a fake clock |
-| **3. Dashboard** | Status, history, chart, settings | Changing the interval takes effect on the next tick with no restart |
-| **4. Setup & scheduling** | Wizard, `schtasks` registration, `doctor` | Clean Windows VM → working autopilot in under 10 minutes |
+| **3. Dashboard** ✅ | Status, history, chart, settings, checklist | **Done 2026-09-14.** 133 tests green; page verified to make zero outbound requests |
+| **4. Setup & scheduling** ✅ | `install-task`, `doctor`, `setup` checklist | **Done 2026-09-14.** 103 tests green; schtasks args and query parsing covered without touching the real scheduler |
 | **5. Hardening** | Retry ladder, staleness alerts, Windows toast on `NEEDS_LOGIN`, screenshot retention, DPAPI, structured logs | Survives: revoked session, offline, renamed resume, Naukri DOM change |
 
 Phase 0 is the one that can invalidate the design. Do it before writing anything

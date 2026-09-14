@@ -25,6 +25,15 @@ py -3 -m venv .venv
 .venv/Scripts/python.exe -m naukri_autopilot.cli config interval_hours 12
 .venv/Scripts/python.exe -m naukri_autopilot.cli tick --explain
 
+# Diagnose and schedule
+.venv/Scripts/python.exe -m naukri_autopilot.cli doctor
+.venv/Scripts/python.exe -m naukri_autopilot.cli install-task
+.venv/Scripts/python.exe -m naukri_autopilot.cli install-task --remove
+
+# Dashboard (127.0.0.1 only, opens a browser)
+.venv/Scripts/python.exe -m naukri_autopilot.cli dashboard
+.venv/Scripts/python.exe -m naukri_autopilot.cli dashboard --no-browser --port 8799
+
 # Phase 0 recon - rediscover selectors after a Naukri redesign
 .venv/Scripts/python.exe scripts/phase0_recon.py probe
 ```
@@ -58,9 +67,8 @@ DST testable at all; keep it that way.
 status and, where a page existed, a screenshot. The scheduler decides *whether* to call
 it; the runner owns *what happens* when it is called.
 
-**Phase status:** 0 (recon), 1 (driver) and 2 (state + scheduler) are done.
-`dashboard`, `setup`, `doctor` are declared in the CLI but print a "lands in Phase N"
-notice. See README §12.
+**Phase status:** all five phases are done (0 recon, 1 driver, 2 state + scheduler,
+3 dashboard, 4 setup + scheduling). Every CLI command is live. See README §12.
 
 ## Invariants — these are load-bearing, not style preferences
 
@@ -91,6 +99,26 @@ a human. Normal cadence still applies so the tool heals itself once the user sig
 **Jitter is derived by hashing the anchor timestamp, never drawn fresh.** It is
 recomputed on every 15-minute tick, so a random value would make the due time wander and
 the run would never fire.
+
+**The scheduled task must stay dumb.** It fires `tick` every 15 minutes and knows
+nothing about 12/24/48h. Teaching the OS task the real interval would break catch-up,
+reintroduce drift, and make every interval change an admin-level re-registration.
+
+**Scheduled runs use `pythonw.exe`.** `python.exe` flashes a console 96 times a day.
+The cost is no stdout, so anything that dies before the store is reachable goes to
+`data/tick.log` via `scheduling.log_line` - which must never raise.
+
+**The dashboard binds 127.0.0.1 and is unauthenticated.** That is only safe because it
+is unreachable off-box - it can trigger a browser run and read back screenshots of the
+user's profile. Never bind 0.0.0.0, and never add a "share on the network" option.
+
+**The dashboard makes zero outbound requests.** No CDN, no webfont, no chart library -
+hence the hand-rolled SVG in `dashboard/chart.py`. A test asserts the rendered page
+contains no external URL; keep it passing.
+
+**Screenshots are served by run id, never by path.** The id is looked up and the
+resolved path re-checked against `SCREENSHOT_DIR`. A filename from the URL would be
+path traversal into the user's filesystem.
 
 **Selectors live only in `driver/selectors.py`.** A Naukri redesign is the expected
 long-term maintenance burden; keeping it a one-file repair is why the rest of the

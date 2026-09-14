@@ -42,7 +42,6 @@ def fake_run(monkeypatch):
         return r.finish(Status.SUCCESS, profile_ts="Today")
 
     monkeypatch.setattr(runner, "run_once", _fake)
-    monkeypatch.setattr(cli, "_not_yet", lambda n: 0)
     return calls
 
 

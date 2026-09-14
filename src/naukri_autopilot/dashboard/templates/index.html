@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Naukri Autopilot</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main>
+
+  <header>
+    <h1>Naukri Autopilot</h1>
+    <p class="sub">Running on this machine only. Nothing leaves your PC.</p>
+  </header>
+
+  {% if d.needs_login %}
+  <div class="banner bad">
+    <strong>Sign-in needed.</strong>
+    Your Naukri session expired, so scheduled runs are doing nothing.
+    Run <code>naukri-autopilot login</code> in a terminal to fix it.
+  </div>
+  {% elif d.stale %}
+  <div class="banner bad">
+    <strong>Not updating.</strong>
+    The last successful run was more than twice your interval ago.
+    Check the history below, or run <code>naukri-autopilot doctor</code>.
+  </div>
+  {% elif d.never_run %}
+  <div class="banner warn">
+    <strong>Not armed yet.</strong>
+    No successful run so far. Finish the checklist at the bottom of this page.
+  </div>
+  {% endif %}
+
+  <section class="cards">
+    <div class="card">
+      <div class="label">Profile</div>
+      <div class="value {% if d.streak %}good{% endif %}">
+        {% if d.streak %}{{ d.streak }}<small>day{{ '' if d.streak == 1 else 's' }} fresh</small>
+        {% else %}—{% endif %}
+      </div>
+    </div>
+    <div class="card">
+      <div class="label">Last success</div>
+      <div class="value">
+        {% if d.state.last_success_at %}
+          <time datetime="{{ d.state.last_success_at.isoformat() }}"
+                class="ago">{{ d.state.last_success_at.strftime('%d %b %H:%M') }}</time>
+        {% else %}never{% endif %}
+      </div>
+    </div>
+    <div class="card">
+      <div class="label">Next run</div>
+      <div class="value" id="decision">{{ d.decision.describe(d.now) }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Interval</div>
+      <div class="value">{{ d.settings.interval_hours }}<small>hours</small></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="row-head">
+      <h2>Activity</h2>
+      {{ legend|safe }}
+    </div>
+    <div class="scroll">{{ grid|safe }}</div>
+  </section>
+
+  <section>
+    <h2>Actions</h2>
+    <div class="actions">
+      <form method="post" action="/run">
+        <button type="submit" {% if active.running %}disabled{% endif %}>
+          {% if active.running %}Running…{% else %}Run now{% endif %}
+        </button>
+      </form>
+      <form method="post" action="/run">
+        <input type="hidden" name="dry" value="1">
+        <button type="submit" class="ghost" {% if active.running %}disabled{% endif %}>
+          Dry run
+        </button>
+      </form>
+      <span class="hint">
+        <strong>Run now</strong> uploads your resume for real.
+        <strong>Dry run</strong> checks everything resolves and changes nothing.
+      </span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Settings</h2>
+    <form method="post" action="/settings" class="settings">
+      <label>
+        <span>Update every</span>
+        <select name="interval_hours">
+          {% for h in intervals %}
+          <option value="{{ h }}" {% if h == d.settings.interval_hours %}selected{% endif %}>
+            {{ h }} hours
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="wide">
+        <span>Resume PDF</span>
+        <input type="text" name="resume_path" value="{{ d.resume_path }}"
+               placeholder="C:\path\to\resume.pdf">
+      </label>
+      <label>
+        <span>Quiet from</span>
+        <input type="number" name="quiet_start" min="0" max="23"
+               value="{{ d.settings.quiet_start if d.settings.quiet_start is not none else '' }}">
+      </label>
+      <label>
+        <span>Quiet until</span>
+        <input type="number" name="quiet_end" min="0" max="23"
+               value="{{ d.settings.quiet_end if d.settings.quiet_end is not none else '' }}">
+      </label>
+      <label class="check">
+        <input type="checkbox" name="headed_mode" value="1"
+               {% if d.headed_mode %}checked{% endif %}>
+        <span>Show the browser window during runs (for debugging)</span>
+      </label>
+      <button type="submit">Save</button>
+    </form>
+    <p class="hint">
+      Quiet hours defer a run rather than skipping it — nothing is lost, it just
+      waits until morning. Leave both blank to disable.
+    </p>
+  </section>
+
+  <section>
+    <h2>Setup</h2>
+    <ul class="checks">
+      {% for c in checks %}
+      <li class="{{ c.state }}">
+        <span class="dot"></span>
+        <span class="name">{{ c.name }}</span>
+        <span class="detail">{{ c.detail }}</span>
+        {% if c.fix and c.state != diag.OK %}<code>{{ c.fix }}</code>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    <form method="post" action="/install-task" class="inline">
+      {% if d.task.registered %}
+        <input type="hidden" name="remove" value="1">
+        <button type="submit" class="ghost">Remove scheduled task</button>
+        <span class="hint">Firing every {{ tick_minutes }} min{% if d.task.next_run %},
+          next at {{ d.task.next_run }}{% endif %}.</span>
+      {% else %}
+        <button type="submit">Register scheduled task</button>
+        <span class="hint">Runs as you, only while logged in. No admin rights.</span>
+      {% endif %}
+    </form>
+  </section>
+
+  <section>
+    <h2>History</h2>
+    {% if d.rows %}
+    <div class="scroll">
+    <table>
+      <thead><tr><th>When</th><th>Status</th><th>Trigger</th><th>Detail</th><th></th></tr></thead>
+      <tbody>
+      {% for r in d.rows[:40] %}
+        <tr class="s-{{ r['status'] }}">
+          <td class="mono">{{ r['started_at'][:16].replace('T', ' ') }}</td>
+          <td><span class="pill {{ r['status'] }}">{{ r['status'] }}</span></td>
+          <td>{{ r['trigger'] }}</td>
+          <td class="detail">
+            {{ r['error_detail'] or r['profile_ts'] or '' }}
+            {% if r['already_fresh'] %}<em>(already fresh)</em>{% endif %}
+          </td>
+          <td>
+            {% if r['screenshot'] %}
+            <a href="/screenshot/{{ r['id'] }}" target="_blank" rel="noopener">view</a>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    {% else %}
+    <p class="hint">No runs yet.</p>
+    {% endif %}
+  </section>
+
+  <footer>
+    Session stored outside this folder, in your user profile. It is
+    password-equivalent — do not copy it anywhere.
+  </footer>
+
+</main>
+
+<script>
+// Poll only while a run is in flight, then reload once to pick up the result.
+(function () {
+  var running = {{ 'true' if active.running else 'false' }};
+  if (!running) return;
+  var tick = setInterval(function () {
+    fetch('/api/status').then(function (r) { return r.json(); }).then(function (s) {
+      if (!s.running) { clearInterval(tick); location.reload(); }
+    }).catch(function () { clearInterval(tick); });
+  }, 2000);
+})();
+</script>
+</body>
+</html>
