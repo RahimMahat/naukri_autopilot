@@ -1,8 +1,4 @@
-"""Command surface for Naukri Autopilot.
-
-`login` and `run` are live (Phase 1). The rest are declared so the shape of the
-tool is fixed, and each says which phase it lands in rather than pretending.
-"""
+"""Command surface for Naukri Autopilot."""
 
 from __future__ import annotations
 
@@ -12,19 +8,7 @@ import sys
 from . import __version__, config, scheduling
 from .results import RunResult, Status, Trigger
 
-PHASES = {"dashboard": 3}
-
 BROWSERS = ["auto", "brave", "chrome", "msedge", "chromium"]
-
-
-def _not_yet(command: str) -> int:
-    print(
-        "'{}' lands in Phase {} - see README section 12.".format(
-            command, PHASES[command]
-        ),
-        file=sys.stderr,
-    )
-    return 2
 
 
 def cmd_login(args) -> int:
@@ -262,6 +246,18 @@ def cmd_setup(args) -> int:
     return 0
 
 
+def cmd_dashboard(args) -> int:
+    try:
+        from .dashboard.app import serve
+    except ImportError:
+        print('Dashboard extras are not installed. Run:\n'
+              '    pip install -e ".[dashboard]"', file=sys.stderr)
+        return 2
+    # 127.0.0.1 is not configurable on purpose: the page can trigger a browser
+    # run and read back screenshots, and it is unauthenticated by design.
+    return serve(port=args.port, open_browser=not args.no_browser)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="naukri-autopilot",
@@ -317,7 +313,10 @@ def build_parser() -> argparse.ArgumentParser:
     task_p.set_defaults(func=cmd_install_task)
 
     dash_p = sub.add_parser("dashboard", help="serve the local dashboard on 127.0.0.1:8765")
-    dash_p.set_defaults(func=lambda a: _not_yet("dashboard"))
+    dash_p.add_argument("--port", type=int, default=8765)
+    dash_p.add_argument("--no-browser", action="store_true",
+                        help="do not open a browser window")
+    dash_p.set_defaults(func=cmd_dashboard)
 
     return p
 

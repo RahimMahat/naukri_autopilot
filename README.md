@@ -291,13 +291,23 @@ that a one-file fix instead of an archaeology expedition.
 Single local page at `http://127.0.0.1:8765`:
 
 - **Status** — next run time, last result, staleness / re-login banners
-- **Activity chart** — GitHub-style contribution grid, one cell per day, colored by
-  status. Hand-rolled inline SVG; no chart library, no CDN (offline must work, and
-  outbound requests would violate the privacy claim in §6).
+- **Activity chart** — GitHub-style contribution grid, one cell per day, coloured by
+  status, with month labels so the window is readable. Hand-rolled inline SVG; no chart
+  library, no CDN (offline must work, and outbound requests would violate §6). A test
+  asserts the rendered page contains no external reference at all.
+- **Streak** — consecutive fresh days. Yesterday still counts: with a 24h interval plus
+  jitter, today's run may not have fired yet, and resetting at midnight would be both
+  wrong and dispiriting.
 - **Run history** — table with status, trigger, error, screenshot thumbnail
 - **Settings** — interval, resume path, headline variants, quiet hours
 - **Setup checklist** — first-run wizard, each step self-verifying (§11)
-- **Run now** / **Dry run** buttons
+- **Run now** / **Dry run** buttons — a run takes ~30s of browser time, far too long to
+  hold an HTTP request open, so the work goes on a thread and the page polls
+  `/api/status` until it finishes.
+
+Screenshots are served **by run id, never by path**: the id is looked up and the resolved
+path re-checked to be inside the screenshot directory. Taking a filename from the URL
+would be a path-traversal hole straight into the user's filesystem.
 
 ---
 
@@ -367,7 +377,7 @@ a click, add the click — that discovery is the deliverable, not the script.
 | **0. Recon** ✅ | `scripts/phase0_recon.py` — login, probe, measure | **Done 2026-09-14.** Session reuse confirmed (180-day cookies); selectors captured; §14.1 answered YES |
 | **1. Core driver** ✅ | `driver/` + `selectors.py`, dry-run mode, screenshots, read-back verification | **Done 2026-09-14.** `run --dry-run` passes against a live account; 20 tests green |
 | **2. State + scheduler** ✅ | SQLite, `scheduler.py`, `tick`, file lock, `status`, `config` | **Done 2026-09-14.** 76 tests green, covering due / overdue / catch-up / jitter / quiet-hours / retry against a fake clock |
-| **3. Dashboard** | Status, history, chart, settings | Changing the interval takes effect on the next tick with no restart |
+| **3. Dashboard** ✅ | Status, history, chart, settings, checklist | **Done 2026-09-14.** 133 tests green; page verified to make zero outbound requests |
 | **4. Setup & scheduling** ✅ | `install-task`, `doctor`, `setup` checklist | **Done 2026-09-14.** 103 tests green; schtasks args and query parsing covered without touching the real scheduler |
 | **5. Hardening** | Retry ladder, staleness alerts, Windows toast on `NEEDS_LOGIN`, screenshot retention, DPAPI, structured logs | Survives: revoked session, offline, renamed resume, Naukri DOM change |
 
