@@ -1,0 +1,19 @@
+# secrets & local state
+data/
+*.json.enc
+
+# python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# resumes are personal documents - never commit one
+*.pdf
+
+# editors
+.vscode/
+.idea/

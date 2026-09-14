@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "naukri-autopilot"
+version = "0.0.1"
+description = "Keeps your Naukri profile fresh on a schedule, entirely on your own machine."
+requires-python = ">=3.9"
+dependencies = [
+    "playwright>=1.40",
+]
+
+[project.optional-dependencies]
+# Not needed until Phase 3. Keeps the Phase 0/1 install small and fast.
+dashboard = [
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "jinja2>=3.1",
+]
+dev = [
+    "pytest>=7",
+]
+
+[project.scripts]
+naukri-autopilot = "naukri_autopilot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
