@@ -86,3 +86,29 @@ def test_missing_required_selector_raises_selector_miss(page_for):
     page.evaluate("document.querySelectorAll('.mod-date-val,.mod-date').forEach(e=>e.remove())")
     with pytest.raises(sel.SelectorMiss):
         profile.read_state(page)
+
+
+def test_reads_the_headline(page_for):
+    """The first version of this chain was guessed, not captured, and silently
+    returned None against the real page - `inspect` is what caught it."""
+    state = profile.read_state(page_for("profile_stale.html"))
+    assert state.headline == "Senior Widget Engineer | Gadget Specialist"
+
+
+def test_upload_refuses_an_oversized_resume(page_for, tmp_path):
+    """Naukri states a 2 MB limit on the page itself; fail before the browser
+    work rather than after a refused upload."""
+    page = page_for("profile_stale.html")
+    big = tmp_path / "big.pdf"
+    big.write_bytes(b"%PDF-1.4\n" + b"x" * (sel.MAX_RESUME_BYTES + 1))
+    with pytest.raises(profile.UploadRejected) as exc:
+        profile.upload_resume(page, big)
+    assert "2 MB" in str(exc.value)
+
+
+def test_upload_refuses_an_unsupported_format(page_for, tmp_path):
+    page = page_for("profile_stale.html")
+    bad = tmp_path / "cv.txt"
+    bad.write_text("nope")
+    with pytest.raises(profile.UploadRejected):
+        profile.upload_resume(page, bad)

@@ -93,9 +93,17 @@ def check_resume(conn) -> Check:
     if not path.is_file():
         return Check("resume", FAIL, "missing: {}".format(path),
                      "point resume_path at a file that exists")
-    if path.suffix.lower() != ".pdf":
-        return Check("resume", WARN, "not a .pdf: {}".format(path.name))
-    size_kb = path.stat().st_size // 1024
+    from .driver import selectors as sel
+
+    if path.suffix.lower() not in sel.ALLOWED_RESUME_SUFFIXES:
+        return Check("resume", FAIL, "{} is not an accepted format".format(path.suffix),
+                     "Naukri accepts {}".format(", ".join(sel.ALLOWED_RESUME_SUFFIXES)))
+    size = path.stat().st_size
+    if size > sel.MAX_RESUME_BYTES:
+        return Check("resume", FAIL,
+                     "{:.1f} MB exceeds Naukri's 2 MB limit".format(size / 1048576.0),
+                     "shrink the PDF or every upload will be refused")
+    size_kb = size // 1024
     detail = "{} ({} KB)".format(path.name, size_kb)
     # A resume inside Downloads is one browser cleanup away from breaking the
     # schedule, and the failure would be silent until someone reads the history.

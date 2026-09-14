@@ -38,24 +38,15 @@ CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
-
-CREATE TABLE IF NOT EXISTS headlines (
-  id       INTEGER PRIMARY KEY,
-  text     TEXT NOT NULL,
-  position INTEGER NOT NULL,
-  enabled  INTEGER NOT NULL DEFAULT 1
-);
 """
 
 DEFAULTS = {
     "interval_hours": "24",
     "resume_path": "",
-    "rotate_headline": "0",
     "quiet_start": "23",
     "quiet_end": "7",
     "headed_mode": "0",
     "screenshot_retention": "60",
-    "last_headline_index": "0",
     "schema_version": str(SCHEMA_VERSION),
 }
 

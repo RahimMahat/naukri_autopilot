@@ -65,10 +65,6 @@ def build_query_args(task_name: str = TASK_NAME) -> "list[str]":
     return ["schtasks", "/Query", "/TN", task_name, "/FO", "LIST", "/V"]
 
 
-def build_run_args(task_name: str = TASK_NAME) -> "list[str]":
-    return ["schtasks", "/Run", "/TN", task_name]
-
-
 @dataclass
 class TaskInfo:
     registered: bool
@@ -128,11 +124,6 @@ def register(
 
 def unregister(task_name: str = TASK_NAME) -> "tuple[bool, str]":
     code, out = _run(build_delete_args(task_name))
-    return code == 0, out.strip()
-
-
-def run_now(task_name: str = TASK_NAME) -> "tuple[bool, str]":
-    code, out = _run(build_run_args(task_name))
     return code == 0, out.strip()
 
 

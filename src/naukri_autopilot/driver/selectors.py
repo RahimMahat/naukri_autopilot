@@ -24,11 +24,6 @@ PROFILE_UPDATED = [
     ".mode-date-wrap .typ-14Medium",
 ]
 
-PROFILE_UPDATED_BLOCK = [
-    ".mod-date",
-    ".mode-date-wrap",
-]
-
 # --------------------------------------------------------------------------- #
 # Resume
 # --------------------------------------------------------------------------- #
@@ -63,17 +58,13 @@ RESUME_NAME = [
 # Headline
 #
 # Renders as a plain div with an adjacent edit icon - editing means driving a
-# modal, not typing into a field. Reading works today; writing is not
-# implemented (README section 14.2 stays open until the modal is mapped).
+# modal, not typing into a field. Reading is all that is needed: rotation is a
+# deferred backstop (see README, open question 2), so nothing writes this.
 # --------------------------------------------------------------------------- #
 HEADLINE_TEXT = [
-    ".resume-headline-text",
-    ".rhead-txt",
-]
-
-HEADLINE_EDIT_ICON = [
-    "[data-title='edit-resume-headline']",
-    ".resume-headline em.icon",
+    "#lazyResumeHead .widgetCont .prefill",
+    "#lazyResumeHead .prefill",
+    ".resumeHeadline .prefill",
 ]
 
 # --------------------------------------------------------------------------- #
@@ -108,6 +99,13 @@ FRESH = "today"
 
 def is_fresh(value: "str | None") -> bool:
     return bool(value) and " ".join(value.split()).lower() == FRESH
+
+
+# Naukri states its own limit on the profile page: "Supported Formats: doc,
+# docx, rtf, pdf, upto 2 MB". Checked before a browser is opened, because an
+# oversized file fails silently-ish - the upload is simply refused.
+MAX_RESUME_BYTES = 2 * 1024 * 1024
+ALLOWED_RESUME_SUFFIXES = (".pdf", ".doc", ".docx", ".rtf")
 
 
 class SelectorMiss(Exception):

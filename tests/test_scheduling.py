@@ -45,7 +45,6 @@ def test_task_name_flows_through_every_command():
         scheduling.build_create_args,
         scheduling.build_delete_args,
         scheduling.build_query_args,
-        scheduling.build_run_args,
     ):
         args = build("CustomName")
         assert args[args.index("/TN") + 1] == "CustomName"

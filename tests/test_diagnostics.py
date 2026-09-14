@@ -58,11 +58,30 @@ def test_resume_in_downloads_warns(conn, tmp_path):
     assert c.state == dx.WARN and "permanent" in c.fix
 
 
-def test_non_pdf_warns(conn, tmp_path):
+def test_docx_is_accepted(conn, tmp_path):
+    """Naukri's own page says doc, docx, rtf and pdf - an earlier version of
+    this check assumed PDF only and warned wrongly."""
     doc = tmp_path / "cv.docx"
     doc.write_bytes(b"x")
     store.put(conn, "resume_path", str(doc))
-    assert dx.check_resume(conn).state == dx.WARN
+    assert dx.check_resume(conn).state == dx.OK
+
+
+def test_unsupported_format_fails(conn, tmp_path):
+    bad = tmp_path / "cv.txt"
+    bad.write_text("nope")
+    store.put(conn, "resume_path", str(bad))
+    assert dx.check_resume(conn).state == dx.FAIL
+
+
+def test_oversized_resume_fails(conn, tmp_path):
+    from naukri_autopilot.driver import selectors as sel
+
+    big = tmp_path / "big.pdf"
+    big.write_bytes(b"x" * (sel.MAX_RESUME_BYTES + 1))
+    store.put(conn, "resume_path", str(big))
+    c = dx.check_resume(conn)
+    assert c.state == dx.FAIL and "2 MB" in c.detail
 
 
 # -- history ---------------------------------------------------------------- #

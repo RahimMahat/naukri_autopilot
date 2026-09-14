@@ -246,6 +246,12 @@ def cmd_setup(args) -> int:
     return 0
 
 
+def cmd_inspect(args) -> int:
+    from .probe import inspect
+
+    return inspect(channel=args.browser, headed=args.headed)
+
+
 def cmd_dashboard(args) -> int:
     try:
         from .dashboard.app import serve
@@ -297,6 +303,12 @@ def build_parser() -> argparse.ArgumentParser:
     cfg_p.add_argument("key", nargs="?")
     cfg_p.add_argument("value", nargs="?")
     cfg_p.set_defaults(func=cmd_config)
+
+    insp_p = browser_flag(sub.add_parser(
+        "inspect", help="check which Naukri selectors still resolve"))
+    insp_p.add_argument("--headed", action="store_true", default=True,
+                        help="show the browser (default)")
+    insp_p.set_defaults(func=cmd_inspect)
 
     doctor_p = sub.add_parser("doctor", help="diagnose a broken install")
     doctor_p.set_defaults(func=cmd_doctor)

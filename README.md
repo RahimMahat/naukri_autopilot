@@ -424,7 +424,7 @@ All five build phases are complete. **133 tests**, none of which need the networ
 
 | Phase | Deliverable | Status |
 |---|---|---|
-| **0. Recon** | `scripts/phase0_recon.py` — login, probe, measure | ✅ Session reuse confirmed (180-day cookies), selectors captured, [open question 1](#14-open-questions) answered YES |
+| **0. Recon** | recon tooling, since folded into `naukri-autopilot inspect` | ✅ Session reuse confirmed (180-day cookies), selectors captured, [open question 1](#14-open-questions) answered YES |
 | **1. Core driver** | `driver/` + `selectors.py`, dry-run mode, screenshots, read-back verification | ✅ `run --dry-run` passes against a live account |
 | **2. State + scheduler** | SQLite, `scheduler.py`, `tick`, file lock, `status`, `config` | ✅ Due / overdue / catch-up / jitter / quiet-hours / retry all covered against a fake clock |
 | **4. Setup & scheduling** | `install-task`, `doctor`, `setup` checklist | ✅ `schtasks` arguments and query parsing covered without touching the real scheduler |
@@ -440,24 +440,24 @@ permanent was written: had identical re-uploads *not* moved the timestamp, headl
 rotation would have become the primary mechanism, changing the settings UI, the
 validation rules, and the minimum number of variants a user must supply.
 
-### Appendix: re-running recon after a Naukri redesign
+### Recovering from a Naukri redesign
 
-`SELECTOR_MISS` in the run history means Naukri changed its markup. The recon script is
-how you find the new selectors:
+`SELECTOR_MISS` in the run history means Naukri changed its markup. One command finds
+the replacements:
 
 ```
-.venv\Scripts\python scripts\phase0_recon.py login
-.venv\Scripts\python scripts\phase0_recon.py probe
-.venv\Scripts\python scripts\phase0_recon.py measure --resume C:\path\to\resume.pdf
+naukri-autopilot inspect
 ```
 
-`login` opens a real window and waits while you sign in — nothing types your password.
-`probe` is read-only: it writes a dated report, screenshot and full HTML to `data/debug/`.
-`measure` **writes to your live profile**, and is only needed if you have to re-confirm
-that a re-upload still moves the timestamp.
+Read-only. It reports which chains in `driver/selectors.py` still resolve, flags any that
+fell through to a fallback (a sign the primary has gone stale), lists what the page now
+offers instead, and saves the DOM and a screenshot to `data/debug/` so the repair can be
+made offline. Then fix `selectors.py`, update `tests/fixtures/` to match the new
+structure, and re-run the tests.
 
-The recon script is meant to be *edited*. If the upload control moves behind a click, add
-the click — that discovery is the deliverable, not the script.
+This began as a throwaway Phase 0 recon script carrying its own copy of the browser
+plumbing. It is now an ordinary command driving the real `driver` modules, so there is
+one definition of how a session is opened rather than two that drift apart.
 
 ---
 
@@ -476,6 +476,7 @@ naukari_autopilot/
 │  ├─ store.py                 SQLite: runs, settings, headlines
 │  ├─ scheduling.py            schtasks registration
 │  ├─ diagnostics.py           the checks behind `doctor`
+│  ├─ probe.py                 selector diagnostics behind `inspect`
 │  ├─ results.py               Status / ErrorKind / RunResult
 │  ├─ lock.py  config.py
 │  ├─ driver/
@@ -488,7 +489,6 @@ naukari_autopilot/
 │     ├─ templates/index.html
 │     └─ static/style.css
 │
-├─ scripts/phase0_recon.py     throwaway recon tool (see appendix above)
 ├─ tests/                      133 tests; fixtures are synthetic
 └─ data/                       state.db, screenshots/, debug/   (gitignored)
 ```
@@ -511,7 +511,10 @@ capture contains the user's name, location and resume filename.
    backstop and driving that modal is deferred indefinitely.
 3. ~~Is there a visible "profile last updated" string?~~ **Answered — yes, two of them.**
    See below.
-4. Is there a rate limit or cooldown on resume uploads?
+4. ~~Any limit on the resume file?~~ **Answered — 2 MB, and doc/docx/rtf/pdf.**
+   Naukri states it on the profile page itself: *"Supported Formats: doc, docx, rtf, pdf,
+   upto 2 MB"*. Both are now enforced before a browser is opened. Whether there is a
+   *rate* limit on uploads is still unknown.
 5. Multiple resume files (one per target role) — worth rotating those too, or scope creep?
 
 ### Phase 0 findings (2026-09-14, live profile)

@@ -34,8 +34,8 @@ py -3 -m venv .venv
 .venv/Scripts/python.exe -m naukri_autopilot.cli dashboard
 .venv/Scripts/python.exe -m naukri_autopilot.cli dashboard --no-browser --port 8799
 
-# Phase 0 recon - rediscover selectors after a Naukri redesign
-.venv/Scripts/python.exe scripts/phase0_recon.py probe
+# Rediscover selectors after a Naukri redesign (read-only)
+.venv/Scripts/python.exe -m naukri_autopilot.cli inspect
 ```
 
 `run` parks the browser offscreen by default. Pass `--headed` when debugging, or you
@@ -155,6 +155,7 @@ instance".
 
 Fixtures in `tests/fixtures/` are **synthetic** — faithful DOM structure, invented
 values. Real captures contain the user's name, location and resume filename; never
-commit one. After a Naukri redesign: run `scripts/phase0_recon.py probe`, update the
-fixture structure from the capture in `data/debug/`, then fix `selectors.py` until the
-tests pass again.
+commit one. After a Naukri redesign: run `naukri-autopilot inspect`, update the fixture
+structure from the capture in `data/debug/`, then fix `selectors.py` until the tests pass
+again. `inspect` drives the real driver modules on purpose - never give it its own copy
+of the browser plumbing.

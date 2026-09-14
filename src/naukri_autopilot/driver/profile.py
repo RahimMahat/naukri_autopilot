@@ -104,6 +104,17 @@ def upload_resume(page, resume: Path) -> None:
     """
     if not resume.is_file():
         raise FileNotFoundError(resume)
+    size = resume.stat().st_size
+    if size > sel.MAX_RESUME_BYTES:
+        raise UploadRejected(
+            "resume is {:.1f} MB; Naukri's stated limit is {:.0f} MB".format(
+                size / 1048576.0, sel.MAX_RESUME_BYTES / 1048576.0)
+        )
+    if resume.suffix.lower() not in sel.ALLOWED_RESUME_SUFFIXES:
+        raise UploadRejected(
+            "{} is not an accepted format {}".format(
+                resume.suffix or "(no extension)", sel.ALLOWED_RESUME_SUFFIXES)
+        )
 
     target = find(page, "resume input", sel.RESUME_INPUT)
 
@@ -139,14 +150,3 @@ def verify_fresh(page) -> ProfileState:
     page.wait_for_timeout(PAGE_SETTLE_MS)
     return read_state(page)
 
-
-def set_headline(page, text: str) -> None:
-    """Not implemented - the headline sits behind an edit modal (README 14.2).
-
-    Phase 0 answered 14.1 with YES, so resume re-upload alone moves the
-    timestamp and rotation is an optional backstop. Mapping the modal is not
-    worth doing until that backstop is actually needed.
-    """
-    raise NotImplementedError(
-        "headline editing needs the edit modal mapped; see README section 14.2"
-    )
