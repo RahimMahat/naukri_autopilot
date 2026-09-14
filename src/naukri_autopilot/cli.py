@@ -9,10 +9,10 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import __version__, config
+from . import __version__, config, scheduling
 from .results import RunResult, Status, Trigger
 
-PHASES = {"dashboard": 3, "setup": 4, "doctor": 4}
+PHASES = {"dashboard": 3}
 
 BROWSERS = ["auto", "brave", "chrome", "msedge", "chromium"]
 
@@ -198,6 +198,70 @@ def cmd_config(args) -> int:
     return 0
 
 
+def cmd_doctor(args) -> int:
+    from . import diagnostics
+
+    checks = diagnostics.run_all()
+    for c in checks:
+        print(c.render())
+    level = diagnostics.worst(checks)
+    print()
+    if level == diagnostics.FAIL:
+        print("Not working. Fix the [FAIL] lines above.")
+        return 1
+    if level == diagnostics.WARN:
+        print("Working, with warnings.")
+        return 0
+    print("All good.")
+    return 0
+
+
+def cmd_install_task(args) -> int:
+    from . import scheduling
+
+    if args.remove:
+        ok, out = scheduling.unregister(args.name)
+        print(out or ("removed" if ok else "failed"))
+        return 0 if ok else 1
+
+    ok, out = scheduling.register(args.name, minutes=args.minutes)
+    if not ok:
+        print(out, file=sys.stderr)
+        return 1
+    print("Registered '{}' - fires `tick` every {} minutes.".format(
+        args.name, args.minutes))
+    print("Runs as you, only while you are logged in. No admin rights used.")
+    print("\nThe task is deliberately dumb: it asks 'is a run due?' every")
+    print("{} minutes and usually the answer is no. Your 12/24/48h interval".format(
+        args.minutes))
+    print("lives in the database - change it with `config interval_hours`,")
+    print("no need to touch the task again.")
+
+    info = scheduling.query(args.name)
+    if info.next_run:
+        print("\nNext fire: {}".format(info.next_run))
+    return 0
+
+
+def cmd_setup(args) -> int:
+    """Checklist. Each line is verified, not taken on trust."""
+    from . import diagnostics
+
+    checks = diagnostics.run_all()
+    print("Naukri Autopilot setup\n")
+    for i, c in enumerate(checks, 1):
+        print("{}. {}".format(i, c.render()))
+
+    level = diagnostics.worst(checks)
+    print()
+    if level == diagnostics.FAIL:
+        print("Work through the [FAIL] lines above, then run `setup` again.")
+        return 1
+    print("Setup complete. The scheduler will take it from here.")
+    print("Watch it with:  naukri-autopilot status")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="naukri-autopilot",
@@ -238,13 +302,22 @@ def build_parser() -> argparse.ArgumentParser:
     cfg_p.add_argument("value", nargs="?")
     cfg_p.set_defaults(func=cmd_config)
 
-    for name, help_text in (
-        ("dashboard", "serve the local dashboard on 127.0.0.1:8765"),
-        ("setup", "first-run checklist"),
-        ("doctor", "diagnose a broken install"),
-    ):
-        sp = sub.add_parser(name, help=help_text)
-        sp.set_defaults(func=lambda a, n=name: _not_yet(n))
+    doctor_p = sub.add_parser("doctor", help="diagnose a broken install")
+    doctor_p.set_defaults(func=cmd_doctor)
+
+    setup_p = sub.add_parser("setup", help="first-run checklist")
+    setup_p.set_defaults(func=cmd_setup)
+
+    task_p = sub.add_parser("install-task",
+                            help="register the 15-minute Task Scheduler heartbeat")
+    task_p.add_argument("--name", default=scheduling.TASK_NAME, help="task name")
+    task_p.add_argument("--minutes", type=int, default=scheduling.TICK_MINUTES,
+                        help="heartbeat interval")
+    task_p.add_argument("--remove", action="store_true", help="unregister instead")
+    task_p.set_defaults(func=cmd_install_task)
+
+    dash_p = sub.add_parser("dashboard", help="serve the local dashboard on 127.0.0.1:8765")
+    dash_p.set_defaults(func=lambda a: _not_yet("dashboard"))
 
     return p
 

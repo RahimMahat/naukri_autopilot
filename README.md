@@ -306,7 +306,8 @@ Single local page at `http://127.0.0.1:8765`:
 | SQLite via stdlib `sqlite3` | Single file, zero setup, survives crashes. An ORM would be dead weight at this size. |
 | FastAPI + uvicorn + Jinja2 | Local-only dashboard; typed routes for free. Flask would be equally fine. |
 | No chart/JS libraries | Offline-capable, and keeps the no-outbound-calls promise literally true. |
-| Windows Task Scheduler | Native, survives reboot, no background process to babysit. Registered via `schtasks` at user scope — no admin prompt. |
+| Windows Task Scheduler | Native, survives reboot, no background process to babysit. Registered via `schtasks` at user scope — no admin prompt, no stored password. |
+| `pythonw.exe` for the tick | `python.exe` would flash a console window 96 times a day, which is the fastest way to get a background tool uninstalled. Costs a console to log to, hence `data/tick.log` as a last resort. |
 
 ---
 
@@ -325,7 +326,7 @@ Each step verifies itself and refuses to tick green on the user's say-so:
    page, not hardcoded — see §14)*
 7. **Pick interval** — 12 / 24 / 48 h
 8. **Dry run** — full flow, no writes. Proves selectors resolve before the user trusts it.
-9. **Register schedule** — `schtasks /create` for the 15-minute tick
+9. **Register schedule** — `naukri-autopilot install-task` (user scope, no admin prompt)
 10. **First real run** — user watches it succeed and sees the screenshot
 
 Plus a copy-pasteable AI-assist prompt (per the product spec) for users who would rather
@@ -363,7 +364,7 @@ a click, add the click — that discovery is the deliverable, not the script.
 | **1. Core driver** ✅ | `driver/` + `selectors.py`, dry-run mode, screenshots, read-back verification | **Done 2026-09-14.** `run --dry-run` passes against a live account; 20 tests green |
 | **2. State + scheduler** ✅ | SQLite, `scheduler.py`, `tick`, file lock, `status`, `config` | **Done 2026-09-14.** 76 tests green, covering due / overdue / catch-up / jitter / quiet-hours / retry against a fake clock |
 | **3. Dashboard** | Status, history, chart, settings | Changing the interval takes effect on the next tick with no restart |
-| **4. Setup & scheduling** | Wizard, `schtasks` registration, `doctor` | Clean Windows VM → working autopilot in under 10 minutes |
+| **4. Setup & scheduling** ✅ | `install-task`, `doctor`, `setup` checklist | **Done 2026-09-14.** 103 tests green; schtasks args and query parsing covered without touching the real scheduler |
 | **5. Hardening** | Retry ladder, staleness alerts, Windows toast on `NEEDS_LOGIN`, screenshot retention, DPAPI, structured logs | Survives: revoked session, offline, renamed resume, Naukri DOM change |
 
 Phase 0 is the one that can invalidate the design. Do it before writing anything
