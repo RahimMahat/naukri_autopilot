@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-# Setup (once)
+# Setup (once) - setup.ps1 / setup.sh do all of this, and are what users run
 py -3 -m venv .venv
 .venv/Scripts/python.exe -m pip install -e ".[dev]"
 .venv/Scripts/python.exe -m playwright install chromium
@@ -119,6 +119,13 @@ contains no external URL; keep it passing.
 **Screenshots are served by run id, never by path.** The id is looked up and the
 resolved path re-checked against `SCREENSHOT_DIR`. A filename from the URL would be
 path traversal into the user's filesystem.
+
+**Runtime dependencies stay in `dependencies`, not an extra.** The dashboard used to
+sit behind `[dashboard]`, so a plain `pip install -e .` produced an install where the
+`dashboard` command failed at runtime. Optional extras are for dev tooling only.
+
+**`setup.ps1` and `setup.sh` must stay in step.** Users run one of them; a fix applied
+to only one is a fix half the users never get.
 
 **Selectors live only in `driver/selectors.py`.** A Naukri redesign is the expected
 long-term maintenance burden; keeping it a one-file repair is why the rest of the

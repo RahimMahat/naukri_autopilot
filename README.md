@@ -325,28 +325,75 @@ would be a path-traversal hole straight into the user's filesystem.
 
 ---
 
-## 11. Setup flow (target: 10 minutes)
+## 11. Setup
 
-Each step verifies itself and refuses to tick green on the user's say-so:
+One command. Pick the one for your shell — they do exactly the same thing.
 
-1. **Python check** — `py -3 --version`; link to python.org if missing
-2. **Install** — `py -3 -m venv .venv`, then `.venv\Scripts\pip install -e .`, then
-   `playwright install chromium`
-3. **Launch dashboard** — `naukri-autopilot dashboard`, opens the browser
-4. **Point at resume** — file picker; validates PDF, size, readability
-5. **Log in** — button opens a headed Naukri window; user logs in manually; app waits for
-   the logged-in state, saves `storage_state`, closes
-6. **Headline variants** — optional; 2–4 phrasings *(character limit read from the live
-   page, not hardcoded — see §14)*
-7. **Pick interval** — 12 / 24 / 48 h
-8. **Dry run** — full flow, no writes. Proves selectors resolve before the user trusts it.
-9. **Register schedule** — `naukri-autopilot install-task` (user scope, no admin prompt)
-10. **First real run** — user watches it succeed and sees the screenshot
+**PowerShell / cmd**
+
+```powershell
+cd D:\Projects\naukari_autopilot
+powershell -ExecutionPolicy Bypass -File setup.ps1
+```
+
+**Git Bash / WSL**
+
+```bash
+cd /d/Projects/naukari_autopilot
+./setup.sh
+```
+
+Either script checks Python, creates `.venv`, installs everything, downloads the
+browser, and finishes by listing what is left to do. Both are safe to run again — they
+repair a half-finished install rather than starting over.
+
+### Then, in any new terminal
+
+**Activate the environment first.** This is the step people miss, and the symptom is
+`naukri-autopilot: command not found` — the tool is installed inside `.venv`, not
+system-wide, so until you activate it the name is not on `PATH`.
+
+| Shell | Activate with |
+|---|---|
+| PowerShell | `.venv\Scripts\activate` |
+| cmd.exe | `.venv\Scripts\activate.bat` |
+| Git Bash | `source .venv/Scripts/activate` |
+
+After that the tool is just its name:
+
+```
+naukri-autopilot login        # sign in to Naukri yourself, once
+naukri-autopilot dashboard    # the control panel
+naukri-autopilot doctor       # what is wrong, and the command that fixes it
+naukri-autopilot status       # schedule state and recent runs
+naukri-autopilot install-task # arm the 15-minute heartbeat
+```
+
+Don't want to activate? Use the full path — identical behaviour, no activation:
+
+```
+.venv\Scripts\naukri-autopilot.exe dashboard
+```
+
+### First-run checklist
+
+Everything below is also shown, self-verifying, at the bottom of the dashboard. Each
+item is checked rather than taken on trust.
+
+1. **Sign in** — `naukri-autopilot login`. A real browser window opens and you log in
+   yourself; nothing types your password. Bundled Chromium cannot complete a Google
+   sign-in (§7), so Brave, Chrome or Edge is used when present.
+2. **Point at your resume** — in the dashboard's Settings, or
+   `naukri-autopilot config resume_path "C:/path/to/cv.pdf"`. Keep it somewhere
+   permanent; `doctor` warns if it lives in Downloads.
+3. **Pick an interval** — 12, 24 or 48 hours.
+4. **Dry run** — the dashboard's *Dry run* button, or `naukri-autopilot run --dry-run`.
+   Proves every selector resolves before you trust it. Changes nothing.
+5. **Arm it** — `naukri-autopilot install-task`. User scope, no admin prompt.
+6. **Watch one real run** — *Run now*, then check the screenshot in the history table.
 
 Plus a copy-pasteable AI-assist prompt (per the product spec) for users who would rather
 have an assistant walk them through it.
-
----
 
 ## 12. Build order
 

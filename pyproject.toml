@@ -7,18 +7,18 @@ name = "naukri-autopilot"
 version = "0.0.1"
 description = "Keeps your Naukri profile fresh on a schedule, entirely on your own machine."
 requires-python = ">=3.9"
+# Everything needed to actually use the tool. The dashboard used to sit behind
+# an optional extra, which meant `pip install -e .` produced an install where
+# `dashboard` failed at runtime - a setup trap with no good reason to exist.
 dependencies = [
     "playwright>=1.40",
-]
-
-[project.optional-dependencies]
-# Not needed until Phase 3. Keeps the Phase 0/1 install small and fast.
-dashboard = [
     "fastapi>=0.110",
     "uvicorn>=0.27",
     "jinja2>=3.1",
     "python-multipart>=0.0.9",
 ]
+
+[project.optional-dependencies]
 dev = [
     "httpx>=0.27",
     "pytest>=7",
