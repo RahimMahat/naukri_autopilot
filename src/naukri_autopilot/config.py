@@ -1,6 +1,6 @@
 """Paths, URLs and constants shared by every entry point.
 
-Session state deliberately lives OUTSIDE the project folder (see README section 6):
+Session state deliberately lives OUTSIDE the project folder (see README, Security model):
 it is password-equivalent, and project folders get zipped, synced and shared.
 """
 
@@ -20,7 +20,7 @@ PROFILE_URL = BASE_URL + "/mnjuser/profile"
 VIEWPORT = {"width": 1440, "height": 900}
 
 # Moves the window far off-screen instead of running headless, so scheduled runs
-# are invisible without carrying a headless fingerprint (README section 7).
+# are invisible without carrying a headless fingerprint (README, Anti-detection posture).
 OFFSCREEN_ARGS = ["--window-position=-32000,-32000"]
 
 # Drops the `navigator.webdriver` flag that Chromium sets when driven over CDP.

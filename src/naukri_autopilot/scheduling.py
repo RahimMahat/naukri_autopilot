@@ -2,7 +2,7 @@
 
 The OS task is deliberately dumb: it fires `tick` every 15 minutes and nothing
 else. All cadence logic lives in scheduler.py, so changing the interval is a
-database write rather than a task re-registration (README section 2).
+database write rather than a task re-registration (README, Architecture).
 
 Registered at user scope, so no admin prompt and no stored password. The task
 therefore only runs while the user is logged in - which the product spec already

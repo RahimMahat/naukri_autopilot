@@ -5,7 +5,7 @@ computed from an injected `now` and a `SchedState` snapshot, which is what makes
 the awkward cases (catch-up, quiet hours, retry ladders, DST) testable at all.
 
 Task Scheduler fires a dumb heartbeat every 15 minutes and this module decides
-whether that tick becomes a run. See README section 4.
+whether that tick becomes a run. See README, Scheduling semantics.
 """
 
 from __future__ import annotations

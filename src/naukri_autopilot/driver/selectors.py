@@ -7,7 +7,7 @@ Chains are tried in order and the first match wins. Put the most specific,
 most stable hook first (an id), then structural fallbacks. A chain that runs out
 raises SelectorMiss, which the runner records with a DOM dump.
 
-Captured from a live profile on 2026-09-14; see README section 14.
+Captured from a live profile on 2026-09-14; see README, Open questions.
 """
 
 from __future__ import annotations

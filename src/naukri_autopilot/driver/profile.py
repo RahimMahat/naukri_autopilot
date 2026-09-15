@@ -144,7 +144,7 @@ def verify_fresh(page) -> ProfileState:
 
     Assertion, not comparison. The field is day-granular and renders the literal
     string "Today", so a second run on the same day shows no before/after diff at
-    all - a diff-based check would call a good run a failure. See README section 3.
+    all - a diff-based check would call a good run a failure. See README, Run lifecycle.
     """
     page.reload(wait_until="domcontentloaded")
     page.wait_for_timeout(PAGE_SETTLE_MS)

@@ -16,338 +16,21 @@ stored, in a folder you control.
 ## Contents
 
 **Using it**
-&nbsp;&nbsp;[11. Setup](#11-setup) · [9. Dashboard](#9-dashboard) · [13. Project layout](#13-project-layout)
+&nbsp;&nbsp;[Setup](#setup) · [Dashboard](#dashboard)
 
 **How it works**
-&nbsp;&nbsp;[1. How the "update" actually works](#1-how-the-update-actually-works)
-&nbsp;&nbsp;[2. Architecture](#2-architecture) · [3. Run lifecycle](#3-run-lifecycle) · [4. Scheduling semantics](#4-scheduling-semantics)
-&nbsp;&nbsp;[5. Data model](#5-data-model-sqlite) · [10. Tech choices](#10-tech-choices)
+&nbsp;&nbsp;[How the "update" actually works](#how-the-update-actually-works) · [Architecture](#architecture) · [Run lifecycle](#run-lifecycle) · [Scheduling semantics](#scheduling-semantics) · [Data model (SQLite)](#data-model-sqlite)
 
 **Risk and failure**
-&nbsp;&nbsp;[6. Security model](#6-security-model) · [7. Anti-detection posture](#7-anti-detection-posture) · [8. Failure modes](#8-failure-modes)
+&nbsp;&nbsp;[Security model](#security-model) · [Anti-detection posture](#anti-detection-posture) · [Failure modes](#failure-modes)
 
-**Project state**
-&nbsp;&nbsp;[12. Build order](#12-build-order) · [14. Open questions](#14-open-questions)
-
----
-
-## 1. How the "update" actually works
-
-One lever does the work; a second is held in reserve.
-
-| Lever | Effect | Status |
-|---|---|---|
-| **Resume re-upload** | Re-uploading the same PDF moves the profile's *last updated* timestamp | **Primary.** Measured against a live account on 2026-09-14: `22Jul , 2026` → `Today`, with a byte-identical file. No visible change to the profile. |
-| **Headline rotation** | Cycles through N user-written variants of the resume headline | **Backstop, off by default.** Only needed if Naukri ever stops counting an identical re-upload as a change. |
-
-Because the primary lever is confirmed, rotation stays unimplemented (see [open question 2](#14-open-questions)): the
-headline sits behind an edit modal, and that work is not worth doing until the backstop
-is actually needed.
-
-Headline variants, if ever enabled, are written by the user and must all be truthful
-descriptions of the same person — this rotates phrasing, not facts.
+**Reference**
+&nbsp;&nbsp;[Tech choices](#tech-choices) · [Project layout](#project-layout) · [Build order](#build-order) · [Open questions](#open-questions)
 
 ---
 
-## 2. Architecture
+## Setup
 
-```
-                        ┌──────────────────────────────┐
-  Windows Task          │  tick  (every 15 min)        │
-  Scheduler  ─────────► │  "is a run due right now?"   │
-                        └───────────────┬──────────────┘
-                                        │ yes
-                                        ▼
-  ┌──────────┐   settings   ┌───────────────────────┐   writes   ┌────────────┐
-  │ Dashboard│ ◄──────────► │      Scheduler        │ ─────────► │  SQLite    │
-  │ 127.0.0.1│    runs      │  (due / catch-up /    │            │  state.db  │
-  │  :8765   │ ◄──────────  │   jitter / retry)     │ ◄───────── │            │
-  └──────────┘              └───────────┬───────────┘   reads    └────────────┘
-       │                                │
-       │ "Log in"                       │ execute
-       ▼                                ▼
-  ┌──────────────────┐        ┌─────────────────────┐        ┌──────────────┐
-  │  Login flow      │        │   Naukri driver     │ ─────► │ screenshots/ │
-  │  (headed, manual)│ ─────► │   (Playwright)      │        │  <run_id>.png│
-  └──────────────────┘ state  └─────────────────────┘        └──────────────┘
-                        .json
-```
-
-**The core design decision:** Task Scheduler does *not* own the 12/24/48h cadence. It
-fires a dumb heartbeat every 15 minutes; the app decides whether a run is due by
-comparing `now` against stored state. Consequences:
-
-- Catch-up is free. Laptop off for two days → first tick after wake sees an overdue run
-  and executes it. No special-case code.
-- No drift, no duplicate-trigger bugs, no re-registering the OS task when the user
-  changes the interval.
-- The interval lives in the database, editable from the dashboard with no admin rights.
-
-### Components
-
-| Module | Responsibility |
-|---|---|
-| `cli.py` | Entry points: `login`, `run`, `tick`, `status`, `config`, `doctor`, `setup`, `install-task`, `dashboard` |
-| `scheduler.py` | Due/overdue calculation, jitter, retry backoff, quiet hours. Pure functions over an injected clock — trivially unit-testable. |
-| `driver/session.py` | Browser context lifecycle, `storage_state` load/save, login detection |
-| `driver/profile.py` | The Naukri page interactions: upload resume, set headline, read back last-updated |
-| `driver/selectors.py` | Every CSS/XPath selector in one file, each with a fallback chain |
-| `store.py` | SQLite access. Plain `sqlite3`, no ORM. |
-| `dashboard/` | FastAPI app + Jinja templates + hand-rolled SVG chart |
-| `lock.py` | Single-instance OS file lock so a manual run and a tick can't collide |
-| `runner.py` | One run, start to terminal state. Never raises. |
-| `results.py` | `Status` / `ErrorKind` / `RunResult`, shaped for the SQLite schema |
-| `scheduling.py` | `schtasks` registration and query parsing |
-| `diagnostics.py` | The checks behind `doctor` and the setup checklist |
-
----
-
-## 3. Run lifecycle
-
-```
- due? ──► acquire lock ──► load session ──► open profile page
-                                │                  │
-                          no session /         challenge
-                          expired cookie       (captcha/OTP)
-                                │                  │
-                                ▼                  ▼
-                          NEEDS_LOGIN         NEEDS_LOGIN
-                          (alert user)        (alert user)
-                                                   │
-       ┌───────────────────────────────────────────┘
-       ▼
- upload resume ──► rotate headline ──► READ BACK last-updated ──► screenshot ──► SUCCESS
-       │                  │                      │
-       └── selector miss / upload rejected ──────┴──► FAILED (screenshot + DOM dump)
-```
-
-Every run ends in exactly one terminal state, always with a screenshot:
-
-`SUCCESS` · `FAILED` · `NEEDS_LOGIN` · `SKIPPED_LOCKED` · `DRY_RUN`
-
-A tick that is simply not due records nothing at all — it never opens a browser, so there
-is no run to write down. Only a tick that wanted to run and could not (`SKIPPED_LOCKED`)
-leaves a row.
-
-**Read-back verification matters.** A screenshot proves a page was reached; parsing the
-profile's own "last updated" string proves the change registered. A run that uploads
-without moving that timestamp is a *silent failure* — the worst possible outcome for
-this product, since the user believes they're covered while their profile sinks.
-
-**Verify by assertion, not by comparison.** `.mod-date-val` renders as the literal string
-`Today` once updated (confirmed in Phase 0 — see [Open questions](#14-open-questions)). So the check is:
-
-```
-success  <=>  .mod-date-val == "Today"   (after reload)
-```
-
-Not `before != after`. The difference is not cosmetic. The field is day-granular, so a
-second run on the same day reads `Today` → `Today` — a before/after comparison sees no
-movement and reports `FAILED` on a run that worked perfectly. Retries, manual "Run now"
-after a scheduled run, and catch-up all hit that path routinely. An absolute assertion is
-correct in every one of those cases; a diff is correct in none of them.
-
----
-
-## 4. Scheduling semantics
-
-```
-next_due_at = last_success_at + interval_hours + jitter
-```
-
-- **Jitter** — 0–45 min, seeded per run. A profile updating at exactly 09:00:00 every
-  day is a machine signature. Rounding off that edge costs nothing.
-- **Catch up, don't backfill.** Missed three cycles? Run *once*. Firing three updates in
-  a row is pointless (only the latest timestamp counts) and looks automated.
-- **Quiet hours** (optional, default 23:00–07:00) — defer rather than update at 3am.
-- **Retry** — on `FAILED`, retry after 30 min, then 2 h, then give up until the next
-  natural cycle. Max 3 attempts. `NEEDS_LOGIN` does *not* retry; it waits for the human.
-- **Staleness alert** — dashboard shows a warning banner when the last success is older
-  than `2 × interval`. The real failure mode to defend against is the tool quietly dying
-  and the user not noticing for a month.
-
-**What counts as an attempt.** Only `SUCCESS`, `FAILED` and `NEEDS_LOGIN` feed the
-scheduler. `DRY_RUN` and `SKIPPED_*` are recorded for the history view but excluded from
-scheduling state — a dry run that registered as a success would silence the schedule for
-a full interval without Naukri ever being touched, and a `SKIPPED_LOCKED` counted as an
-attempt would corrupt both the retry ladder and the staleness alert.
-
-**`NEEDS_LOGIN` is not a failure.** It does not increment the failure count and does not
-enter the retry ladder: the session cannot recover without a human, so retrying just
-burns attempts. The normal cadence still applies, which means the tool heals itself on
-the next cycle once the user signs in again.
-
-**Jitter must be deterministic per cycle.** It is derived by hashing the anchor
-timestamp, not drawn fresh each tick. A new random offset on every 15-minute heartbeat
-would leave the due time perpetually a few minutes away, and the run would never fire.
-
----
-
-## 5. Data model (SQLite)
-
-```sql
-CREATE TABLE runs (
-  id            INTEGER PRIMARY KEY,
-  started_at    TEXT NOT NULL,      -- ISO-8601, UTC
-  finished_at   TEXT,
-  status        TEXT NOT NULL,      -- SUCCESS | FAILED | NEEDS_LOGIN | SKIPPED_* | DRY_RUN
-  trigger       TEXT NOT NULL,      -- schedule | manual | catchup | retry
-  headline_used TEXT,
-  profile_ts    TEXT,               -- "last updated" string read back from the page
-  error_kind    TEXT,               -- SESSION_EXPIRED | SELECTOR_MISS | UPLOAD_REJECTED
-                                    -- | NETWORK | CHALLENGE | UNKNOWN
-  error_detail  TEXT,
-  screenshot    TEXT                -- relative path
-);
-
-CREATE TABLE settings  (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-
-CREATE TABLE headlines (id INTEGER PRIMARY KEY, text TEXT NOT NULL,
-                        position INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1);
-```
-
-`settings` keys: `interval_hours`, `resume_path`, `rotate_headline`, `quiet_start`,
-`quiet_end`, `headed_mode`, `screenshot_retention`, `last_headline_index`.
-
-Timestamps stored UTC, rendered local. The user's machine will change timezones (travel,
-DST) and the schedule must not jump when it does.
-
----
-
-## 6. Security model
-
-The session file **is** account access. Anyone holding it can act as the user on Naukri
-without a password. Design accordingly:
-
-- Stored at `%LOCALAPPDATA%\NaukriAutopilot\state.json` — never in the repo, never in the
-  project folder the user might zip and share. `.gitignore` covers `data/` regardless.
-- The password is never seen by this tool. Login is a real headed browser window where
-  the user types into Naukri's own page; we only call `context.storage_state()` afterward.
-- Dashboard binds `127.0.0.1` only — never `0.0.0.0`. It is unauthenticated by design,
-  which is only safe because it is not reachable off-box.
-- No telemetry, no crash reporting, no update check. The privacy claim in the product
-  spec is absolute, so there must be zero outbound calls to anything but naukri.com.
-- **Optional hardening:** encrypt `state.json` at rest with Windows DPAPI
-  (`CryptProtectData`, user-scoped). Cheap, and it stops casual file-copy theft.
-
-### Rejected: credentials in `.env`
-
-Considered and turned down. Recorded here so it doesn't get re-proposed.
-
-- **This account signs in with Google OAuth — there is no Naukri password to store.** The
-  credential is a Google session. Scripting that login means storing a *Google* password
-  and, with 2FA on, the TOTP seed too — which cancels the 2FA.
-- **Blast radius.** A Naukri cookie loses you a job profile. A Google password loses you
-  email, Drive, and the password-reset link for every other account you own.
-- **Google blocks it anyway.** Automated sign-in is the flow they have hardened most;
-  CDP-driven browsers get "this browser or app may not be secure."
-- **Worse location.** `.env` lives in the project folder — the thing that gets zipped,
-  synced to OneDrive, and `git add -A`'d. `%LOCALAPPDATA%` is none of those.
-- **It wouldn't even remove the session file.** Playwright still writes cookies after
-  login, so you would hold the password *and* the session. Strictly more to lose.
-- **It deletes a product promise.** "Your password is never seen, typed or stored" is a
-  feature, not an implementation detail.
-
-The friction this was meant to solve — having to log in again when the session lapses —
-is addressed instead by: the persistent profile keeping the *Google* session too (so
-re-auth is usually one click on the account chooser, no password), the 12–48h cadence
-keeping the session warm on its own, and a Windows toast on `NEEDS_LOGIN` so you find out
-without having to open the dashboard.
-
-`.env` is still fine for non-secret dev overrides (dashboard port, log level). Never for
-credentials.
-
-**Honest risk note:** this automates your own account doing something you are allowed to
-do by hand. That is not the same as being invisible. Naukri can change its UI,
-rate-limit, or flag unusual patterns at any time, and the account risk is yours. Jitter,
-human-ish pacing, a real browser profile, and a hard cap of one update per cycle are
-mitigations — not guarantees.
-
----
-
-## 7. Anti-detection posture
-
-Modest and honest, not an arms race:
-
-- **Headed, not headless.** The spec already requires the PC on and logged in, so a real
-  browser costs nothing and avoids the headless fingerprint entirely. Hide it with
-  `--window-position=-32000,-32000` so nothing pops up mid-workday. `headed_mode=false`
-  stays available for debugging.
-- **A real installed browser, not bundled Chromium.** Auto-detection order is Brave →
-  Chrome → Edge → bundled. This is not paranoia: Google's sign-in refuses bundled
-  Chromium outright with *"this browser or app may not be secure"*, which blocks OAuth
-  login entirely. Brave is driven by `executable_path` (it has no Playwright channel).
-- **`--disable-blink-features=AutomationControlled`** plus an init script clearing
-  `navigator.webdriver`. Removes the one obvious tell; not a cloak.
-- **Persistent user-data-dir**, not a fresh context per run — stable fingerprint, and
-  cookies survive naturally. **One profile directory per browser build**
-  (`profile-brave`, `profile-msedge`, …) — Chromium builds cannot share a
-  user-data-dir, and the failure mode is a misleading "already in use by another
-  instance" error.
-- One action per cycle. No polling loops, no page crawling, no parallelism.
-- Realistic viewport, real user agent (whatever the bundled Chromium reports — don't spoof).
-
----
-
-## 8. Failure modes
-
-| Failure | Detection | Response |
-|---|---|---|
-| Session expired | Redirected to login, or profile selectors absent | `NEEDS_LOGIN`, dashboard banner, no retry |
-| Captcha / OTP challenge | Challenge markers in DOM | `NEEDS_LOGIN` + screenshot so the user sees why |
-| Naukri changed its UI | Every selector in a fallback chain misses | `SELECTOR_MISS` + full DOM dump to `data/debug/` |
-| Upload rejected | Error toast, or read-back timestamp unmoved | `UPLOAD_REJECTED`, retry ladder |
-| Resume file moved or deleted | Pre-flight `Path.exists()` | Fail fast before opening a browser |
-| Machine asleep at due time | Next tick sees overdue | Catch-up run |
-| Manual run races a tick | File lock | `SKIPPED_LOCKED` |
-| Silent no-op "success" | Read-back verification | `FAILED`, not `SUCCESS` |
-
-`SELECTOR_MISS` is the expected long-term maintenance burden — Naukri will redesign
-eventually. Concentrating every selector in `selectors.py` with fallback chains makes
-that a one-file fix instead of an archaeology expedition.
-
----
-
-## 9. Dashboard
-
-Single local page at `http://127.0.0.1:8765`:
-
-- **Status** — next run time, last result, staleness / re-login banners
-- **Activity chart** — GitHub-style contribution grid, one cell per day, coloured by
-  status, with month labels so the window is readable. Hand-rolled inline SVG; no chart
-  library, no CDN (offline must work, and outbound requests would violate the [security model](#6-security-model)). A test
-  asserts the rendered page contains no external reference at all.
-- **Streak** — consecutive fresh days. Yesterday still counts: with a 24h interval plus
-  jitter, today's run may not have fired yet, and resetting at midnight would be both
-  wrong and dispiriting.
-- **Run history** — table with status, trigger, error, screenshot thumbnail
-- **Settings** — interval, resume path, quiet hours, headed-mode toggle
-- **Setup checklist** — first-run wizard, each step self-verifying (see [Setup](#11-setup))
-- **Run now** / **Dry run** buttons — a run takes ~30s of browser time, far too long to
-  hold an HTTP request open, so the work goes on a thread and the page polls
-  `/api/status` until it finishes.
-
-Screenshots are served **by run id, never by path**: the id is looked up and the resolved
-path re-checked to be inside the screenshot directory. Taking a filename from the URL
-would be a path-traversal hole straight into the user's filesystem.
-
----
-
-## 10. Tech choices
-
-| Choice | Rationale |
-|---|---|
-| Python 3.9+ | Spec floor. Means `from __future__ import annotations` everywhere; no `match`, no PEP 604 unions at runtime. |
-| Playwright (sync API) | Bundles its own Chromium — no system browser dependency. Sync API because there is no concurrency to exploit and it debugs far more easily. |
-| SQLite via stdlib `sqlite3` | Single file, zero setup, survives crashes. An ORM would be dead weight at this size. |
-| FastAPI + uvicorn + Jinja2 | Local-only dashboard; typed routes for free. Flask would be equally fine. |
-| No chart/JS libraries | Offline-capable, and keeps the no-outbound-calls promise literally true. |
-| Windows Task Scheduler | Native, survives reboot, no background process to babysit. Registered via `schtasks` at user scope — no admin prompt, no stored password. |
-| `pythonw.exe` for the tick | `python.exe` would flash a console window 96 times a day, which is the fastest way to get a background tool uninstalled. Costs a console to log to, hence `data/tick.log` as a last resort. |
-
----
-
-## 11. Setup
 
 One command. Pick the one for your shell — they do exactly the same thing.
 
@@ -404,7 +87,7 @@ item is checked rather than taken on trust.
 
 1. **Sign in** — `naukri-autopilot login`. A real browser window opens and you log in
    yourself; nothing types your password. Bundled Chromium cannot complete a Google
-   sign-in (see [Anti-detection posture](#7-anti-detection-posture)), so Brave,
+   sign-in (see [Anti-detection posture](#anti-detection-posture)), so Brave,
    Chrome or Edge is used when present.
 2. **Point at your resume** — in the dashboard's Settings, or
    `naukri-autopilot config resume_path "C:/path/to/cv.pdf"`. Keep it somewhere
@@ -418,13 +101,403 @@ item is checked rather than taken on trust.
 Plus a copy-pasteable AI-assist prompt (per the product spec) for users who would rather
 have an assistant walk them through it.
 
-## 12. Build order
+---
+
+## Dashboard
+
+
+Single local page at `http://127.0.0.1:8765`:
+
+- **Status** — next run time, last result, staleness / re-login banners
+- **Activity chart** — GitHub-style contribution grid, one cell per day, coloured by
+  status, with month labels so the window is readable. Hand-rolled inline SVG; no chart
+  library, no CDN (offline must work, and outbound requests would violate the [security model](#security-model)). A test
+  asserts the rendered page contains no external reference at all.
+- **Streak** — consecutive fresh days. Yesterday still counts: with a 24h interval plus
+  jitter, today's run may not have fired yet, and resetting at midnight would be both
+  wrong and dispiriting.
+- **Run history** — table with status, trigger, error, screenshot thumbnail
+- **Settings** — interval, resume path, quiet hours, headed-mode toggle
+- **Setup checklist** — first-run wizard, each step self-verifying (see [Setup](#setup))
+- **Run now** / **Dry run** buttons — a run takes ~30s of browser time, far too long to
+  hold an HTTP request open, so the work goes on a thread and the page polls
+  `/api/status` until it finishes.
+
+Screenshots are served **by run id, never by path**: the id is looked up and the resolved
+path re-checked to be inside the screenshot directory. Taking a filename from the URL
+would be a path-traversal hole straight into the user's filesystem.
+
+---
+
+---
+
+## How the "update" actually works
+
+
+One lever does the work; a second is held in reserve.
+
+| Lever | Effect | Status |
+|---|---|---|
+| **Resume re-upload** | Re-uploading the same PDF moves the profile's *last updated* timestamp | **Primary.** Measured against a live account on 2026-09-14: `22Jul , 2026` → `Today`, with a byte-identical file. No visible change to the profile. |
+| **Headline rotation** | Cycles through N user-written variants of the resume headline | **Backstop, off by default.** Only needed if Naukri ever stops counting an identical re-upload as a change. |
+
+Because the primary lever is confirmed, rotation stays unimplemented (see [open question 2](#open-questions)): the
+headline sits behind an edit modal, and that work is not worth doing until the backstop
+is actually needed.
+
+Headline variants, if ever enabled, are written by the user and must all be truthful
+descriptions of the same person — this rotates phrasing, not facts.
+
+---
+
+---
+
+## Architecture
+
+
+```
+                        ┌──────────────────────────────┐
+  Windows Task          │  tick  (every 15 min)        │
+  Scheduler  ─────────► │  "is a run due right now?"   │
+                        └───────────────┬──────────────┘
+                                        │ yes
+                                        ▼
+  ┌──────────┐   settings   ┌───────────────────────┐   writes   ┌────────────┐
+  │ Dashboard│ ◄──────────► │      Scheduler        │ ─────────► │  SQLite    │
+  │ 127.0.0.1│    runs      │  (due / catch-up /    │            │  state.db  │
+  │  :8765   │ ◄──────────  │   jitter / retry)     │ ◄───────── │            │
+  └──────────┘              └───────────┬───────────┘   reads    └────────────┘
+       │                                │
+       │ "Log in"                       │ execute
+       ▼                                ▼
+  ┌──────────────────┐        ┌─────────────────────┐        ┌──────────────┐
+  │  Login flow      │        │   Naukri driver     │ ─────► │ screenshots/ │
+  │  (headed, manual)│ ─────► │   (Playwright)      │        │  <run_id>.png│
+  └──────────────────┘ state  └─────────────────────┘        └──────────────┘
+                        .json
+```
+
+**The core design decision:** Task Scheduler does *not* own the 12/24/48h cadence. It
+fires a dumb heartbeat every 15 minutes; the app decides whether a run is due by
+comparing `now` against stored state. Consequences:
+
+- Catch-up is free. Laptop off for two days → first tick after wake sees an overdue run
+  and executes it. No special-case code.
+- No drift, no duplicate-trigger bugs, no re-registering the OS task when the user
+  changes the interval.
+- The interval lives in the database, editable from the dashboard with no admin rights.
+
+### Components
+
+| Module | Responsibility |
+|---|---|
+| `cli.py` | Entry points: `login`, `run`, `tick`, `status`, `config`, `doctor`, `setup`, `install-task`, `dashboard` |
+| `scheduler.py` | Due/overdue calculation, jitter, retry backoff, quiet hours. Pure functions over an injected clock — trivially unit-testable. |
+| `driver/session.py` | Browser context lifecycle, `storage_state` load/save, login detection |
+| `driver/profile.py` | The Naukri page interactions: upload resume, set headline, read back last-updated |
+| `driver/selectors.py` | Every CSS/XPath selector in one file, each with a fallback chain |
+| `store.py` | SQLite access. Plain `sqlite3`, no ORM. |
+| `dashboard/` | FastAPI app + Jinja templates + hand-rolled SVG chart |
+| `lock.py` | Single-instance OS file lock so a manual run and a tick can't collide |
+| `runner.py` | One run, start to terminal state. Never raises. |
+| `results.py` | `Status` / `ErrorKind` / `RunResult`, shaped for the SQLite schema |
+| `scheduling.py` | `schtasks` registration and query parsing |
+| `diagnostics.py` | The checks behind `doctor` and the setup checklist |
+
+---
+
+---
+
+## Run lifecycle
+
+
+```
+ due? ──► acquire lock ──► load session ──► open profile page
+                                │                  │
+                          no session /         challenge
+                          expired cookie       (captcha/OTP)
+                                │                  │
+                                ▼                  ▼
+                          NEEDS_LOGIN         NEEDS_LOGIN
+                          (alert user)        (alert user)
+                                                   │
+       ┌───────────────────────────────────────────┘
+       ▼
+ upload resume ──► rotate headline ──► READ BACK last-updated ──► screenshot ──► SUCCESS
+       │                  │                      │
+       └── selector miss / upload rejected ──────┴──► FAILED (screenshot + DOM dump)
+```
+
+Every run ends in exactly one terminal state, always with a screenshot:
+
+`SUCCESS` · `FAILED` · `NEEDS_LOGIN` · `SKIPPED_LOCKED` · `DRY_RUN`
+
+A tick that is simply not due records nothing at all — it never opens a browser, so there
+is no run to write down. Only a tick that wanted to run and could not (`SKIPPED_LOCKED`)
+leaves a row.
+
+**Read-back verification matters.** A screenshot proves a page was reached; parsing the
+profile's own "last updated" string proves the change registered. A run that uploads
+without moving that timestamp is a *silent failure* — the worst possible outcome for
+this product, since the user believes they're covered while their profile sinks.
+
+**Verify by assertion, not by comparison.** `.mod-date-val` renders as the literal string
+`Today` once updated (confirmed in Phase 0 — see [Open questions](#open-questions)). So the check is:
+
+```
+success  <=>  .mod-date-val == "Today"   (after reload)
+```
+
+Not `before != after`. The difference is not cosmetic. The field is day-granular, so a
+second run on the same day reads `Today` → `Today` — a before/after comparison sees no
+movement and reports `FAILED` on a run that worked perfectly. Retries, manual "Run now"
+after a scheduled run, and catch-up all hit that path routinely. An absolute assertion is
+correct in every one of those cases; a diff is correct in none of them.
+
+---
+
+---
+
+## Scheduling semantics
+
+
+```
+next_due_at = last_success_at + interval_hours + jitter
+```
+
+- **Jitter** — 0–45 min, seeded per run. A profile updating at exactly 09:00:00 every
+  day is a machine signature. Rounding off that edge costs nothing.
+- **Catch up, don't backfill.** Missed three cycles? Run *once*. Firing three updates in
+  a row is pointless (only the latest timestamp counts) and looks automated.
+- **Quiet hours** (optional, default 23:00–07:00) — defer rather than update at 3am.
+- **Retry** — on `FAILED`, retry after 30 min, then 2 h, then give up until the next
+  natural cycle. Max 3 attempts. `NEEDS_LOGIN` does *not* retry; it waits for the human.
+- **Staleness alert** — dashboard shows a warning banner when the last success is older
+  than `2 × interval`. The real failure mode to defend against is the tool quietly dying
+  and the user not noticing for a month.
+
+**What counts as an attempt.** Only `SUCCESS`, `FAILED` and `NEEDS_LOGIN` feed the
+scheduler. `DRY_RUN` and `SKIPPED_*` are recorded for the history view but excluded from
+scheduling state — a dry run that registered as a success would silence the schedule for
+a full interval without Naukri ever being touched, and a `SKIPPED_LOCKED` counted as an
+attempt would corrupt both the retry ladder and the staleness alert.
+
+**`NEEDS_LOGIN` is not a failure.** It does not increment the failure count and does not
+enter the retry ladder: the session cannot recover without a human, so retrying just
+burns attempts. The normal cadence still applies, which means the tool heals itself on
+the next cycle once the user signs in again.
+
+**Jitter must be deterministic per cycle.** It is derived by hashing the anchor
+timestamp, not drawn fresh each tick. A new random offset on every 15-minute heartbeat
+would leave the due time perpetually a few minutes away, and the run would never fire.
+
+---
+
+---
+
+## Data model (SQLite)
+
+
+```sql
+CREATE TABLE runs (
+  id            INTEGER PRIMARY KEY,
+  started_at    TEXT NOT NULL,      -- ISO-8601, UTC
+  finished_at   TEXT,
+  status        TEXT NOT NULL,      -- SUCCESS | FAILED | NEEDS_LOGIN | SKIPPED_* | DRY_RUN
+  trigger       TEXT NOT NULL,      -- schedule | manual | catchup | retry
+  headline_used TEXT,
+  profile_ts    TEXT,               -- "last updated" string read back from the page
+  error_kind    TEXT,               -- SESSION_EXPIRED | SELECTOR_MISS | UPLOAD_REJECTED
+                                    -- | NETWORK | CHALLENGE | UNKNOWN
+  error_detail  TEXT,
+  screenshot    TEXT                -- relative path
+);
+
+CREATE TABLE settings  (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+CREATE TABLE headlines (id INTEGER PRIMARY KEY, text TEXT NOT NULL,
+                        position INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1);
+```
+
+`settings` keys: `interval_hours`, `resume_path`, `rotate_headline`, `quiet_start`,
+`quiet_end`, `headed_mode`, `screenshot_retention`, `last_headline_index`.
+
+Timestamps stored UTC, rendered local. The user's machine will change timezones (travel,
+DST) and the schedule must not jump when it does.
+
+---
+
+---
+
+## Security model
+
+
+The session file **is** account access. Anyone holding it can act as the user on Naukri
+without a password. Design accordingly:
+
+- Stored at `%LOCALAPPDATA%\NaukriAutopilot\state.json` — never in the repo, never in the
+  project folder the user might zip and share. `.gitignore` covers `data/` regardless.
+- The password is never seen by this tool. Login is a real headed browser window where
+  the user types into Naukri's own page; we only call `context.storage_state()` afterward.
+- Dashboard binds `127.0.0.1` only — never `0.0.0.0`. It is unauthenticated by design,
+  which is only safe because it is not reachable off-box.
+- No telemetry, no crash reporting, no update check. The privacy claim in the product
+  spec is absolute, so there must be zero outbound calls to anything but naukri.com.
+- **Optional hardening:** encrypt `state.json` at rest with Windows DPAPI
+  (`CryptProtectData`, user-scoped). Cheap, and it stops casual file-copy theft.
+
+### Rejected: credentials in `.env`
+
+Considered and turned down. Recorded here so it doesn't get re-proposed.
+
+- **This account signs in with Google OAuth — there is no Naukri password to store.** The
+  credential is a Google session. Scripting that login means storing a *Google* password
+  and, with 2FA on, the TOTP seed too — which cancels the 2FA.
+- **Blast radius.** A Naukri cookie loses you a job profile. A Google password loses you
+  email, Drive, and the password-reset link for every other account you own.
+- **Google blocks it anyway.** Automated sign-in is the flow they have hardened most;
+  CDP-driven browsers get "this browser or app may not be secure."
+- **Worse location.** `.env` lives in the project folder — the thing that gets zipped,
+  synced to OneDrive, and `git add -A`'d. `%LOCALAPPDATA%` is none of those.
+- **It wouldn't even remove the session file.** Playwright still writes cookies after
+  login, so you would hold the password *and* the session. Strictly more to lose.
+- **It deletes a product promise.** "Your password is never seen, typed or stored" is a
+  feature, not an implementation detail.
+
+The friction this was meant to solve — having to log in again when the session lapses —
+is addressed instead by: the persistent profile keeping the *Google* session too (so
+re-auth is usually one click on the account chooser, no password), the 12–48h cadence
+keeping the session warm on its own, and a Windows toast on `NEEDS_LOGIN` so you find out
+without having to open the dashboard.
+
+`.env` is still fine for non-secret dev overrides (dashboard port, log level). Never for
+credentials.
+
+**Honest risk note:** this automates your own account doing something you are allowed to
+do by hand. That is not the same as being invisible. Naukri can change its UI,
+rate-limit, or flag unusual patterns at any time, and the account risk is yours. Jitter,
+human-ish pacing, a real browser profile, and a hard cap of one update per cycle are
+mitigations — not guarantees.
+
+---
+
+---
+
+## Anti-detection posture
+
+
+Modest and honest, not an arms race:
+
+- **Headed, not headless.** The spec already requires the PC on and logged in, so a real
+  browser costs nothing and avoids the headless fingerprint entirely. Hide it with
+  `--window-position=-32000,-32000` so nothing pops up mid-workday. `headed_mode=false`
+  stays available for debugging.
+- **A real installed browser, not bundled Chromium.** Auto-detection order is Brave →
+  Chrome → Edge → bundled. This is not paranoia: Google's sign-in refuses bundled
+  Chromium outright with *"this browser or app may not be secure"*, which blocks OAuth
+  login entirely. Brave is driven by `executable_path` (it has no Playwright channel).
+- **`--disable-blink-features=AutomationControlled`** plus an init script clearing
+  `navigator.webdriver`. Removes the one obvious tell; not a cloak.
+- **Persistent user-data-dir**, not a fresh context per run — stable fingerprint, and
+  cookies survive naturally. **One profile directory per browser build**
+  (`profile-brave`, `profile-msedge`, …) — Chromium builds cannot share a
+  user-data-dir, and the failure mode is a misleading "already in use by another
+  instance" error.
+- One action per cycle. No polling loops, no page crawling, no parallelism.
+- Realistic viewport, real user agent (whatever the bundled Chromium reports — don't spoof).
+
+---
+
+---
+
+## Failure modes
+
+
+| Failure | Detection | Response |
+|---|---|---|
+| Session expired | Redirected to login, or profile selectors absent | `NEEDS_LOGIN`, dashboard banner, no retry |
+| Captcha / OTP challenge | Challenge markers in DOM | `NEEDS_LOGIN` + screenshot so the user sees why |
+| Naukri changed its UI | Every selector in a fallback chain misses | `SELECTOR_MISS` + full DOM dump to `data/debug/` |
+| Upload rejected | Error toast, or read-back timestamp unmoved | `UPLOAD_REJECTED`, retry ladder |
+| Resume file moved or deleted | Pre-flight `Path.exists()` | Fail fast before opening a browser |
+| Machine asleep at due time | Next tick sees overdue | Catch-up run |
+| Manual run races a tick | File lock | `SKIPPED_LOCKED` |
+| Silent no-op "success" | Read-back verification | `FAILED`, not `SUCCESS` |
+
+`SELECTOR_MISS` is the expected long-term maintenance burden — Naukri will redesign
+eventually. Concentrating every selector in `selectors.py` with fallback chains makes
+that a one-file fix instead of an archaeology expedition.
+
+---
+
+---
+
+## Tech choices
+
+
+| Choice | Rationale |
+|---|---|
+| Python 3.9+ | Spec floor. Means `from __future__ import annotations` everywhere; no `match`, no PEP 604 unions at runtime. |
+| Playwright (sync API) | Bundles its own Chromium — no system browser dependency. Sync API because there is no concurrency to exploit and it debugs far more easily. |
+| SQLite via stdlib `sqlite3` | Single file, zero setup, survives crashes. An ORM would be dead weight at this size. |
+| FastAPI + uvicorn + Jinja2 | Local-only dashboard; typed routes for free. Flask would be equally fine. |
+| No chart/JS libraries | Offline-capable, and keeps the no-outbound-calls promise literally true. |
+| Windows Task Scheduler | Native, survives reboot, no background process to babysit. Registered via `schtasks` at user scope — no admin prompt, no stored password. |
+| `pythonw.exe` for the tick | `python.exe` would flash a console window 96 times a day, which is the fastest way to get a background tool uninstalled. Costs a console to log to, hence `data/tick.log` as a last resort. |
+
+---
+
+---
+
+## Project layout
+
+
+```
+naukari_autopilot/
+├─ setup.ps1                   one-command install (PowerShell)
+├─ setup.sh                    one-command install (Git Bash / WSL)
+├─ pyproject.toml  README.md  CLAUDE.md
+│
+├─ src/naukri_autopilot/
+│  ├─ cli.py                   every command
+│  ├─ runner.py                one run, start to terminal state. Never raises.
+│  ├─ scheduler.py             pure due/overdue/jitter/retry logic
+│  ├─ store.py                 SQLite: runs, settings, headlines
+│  ├─ scheduling.py            schtasks registration
+│  ├─ diagnostics.py           the checks behind `doctor`
+│  ├─ probe.py                 selector diagnostics behind `inspect`
+│  ├─ results.py               Status / ErrorKind / RunResult
+│  ├─ lock.py  config.py
+│  ├─ driver/
+│  │  ├─ selectors.py          EVERY selector, fallback-chained
+│  │  ├─ profile.py            page operations
+│  │  └─ session.py            browser lifecycle, login detection
+│  └─ dashboard/
+│     ├─ app.py                FastAPI routes
+│     ├─ chart.py              hand-rolled SVG activity grid
+│     ├─ templates/index.html
+│     └─ static/style.css
+│
+├─ tests/                      133 tests; fixtures are synthetic
+└─ data/                       state.db, screenshots/, debug/   (gitignored)
+```
+
+Session state lives in `%LOCALAPPDATA%\NaukriAutopilot\`, **not** `data/` — see
+[Security model](#security-model). Test fixtures are synthetic by rule: a real page
+capture contains the user's name, location and resume filename.
+
+---
+
+---
+
+## Build order
+
 
 All five build phases are complete. **133 tests**, none of which need the network.
 
 | Phase | Deliverable | Status |
 |---|---|---|
-| **0. Recon** | recon tooling, since folded into `naukri-autopilot inspect` | ✅ Session reuse confirmed (180-day cookies), selectors captured, [open question 1](#14-open-questions) answered YES |
+| **0. Recon** | recon tooling, since folded into `naukri-autopilot inspect` | ✅ Session reuse confirmed (180-day cookies), selectors captured, [open question 1](#open-questions) answered YES |
 | **1. Core driver** | `driver/` + `selectors.py`, dry-run mode, screenshots, read-back verification | ✅ `run --dry-run` passes against a live account |
 | **2. State + scheduler** | SQLite, `scheduler.py`, `tick`, file lock, `status`, `config` | ✅ Due / overdue / catch-up / jitter / quiet-hours / retry all covered against a fake clock |
 | **4. Setup & scheduling** | `install-task`, `doctor`, `setup` checklist | ✅ `schtasks` arguments and query parsing covered without touching the real scheduler |
@@ -461,45 +534,10 @@ one definition of how a session is opened rather than two that drift apart.
 
 ---
 
-## 13. Project layout
-
-```
-naukari_autopilot/
-├─ setup.ps1                   one-command install (PowerShell)
-├─ setup.sh                    one-command install (Git Bash / WSL)
-├─ pyproject.toml  README.md  CLAUDE.md
-│
-├─ src/naukri_autopilot/
-│  ├─ cli.py                   every command
-│  ├─ runner.py                one run, start to terminal state. Never raises.
-│  ├─ scheduler.py             pure due/overdue/jitter/retry logic
-│  ├─ store.py                 SQLite: runs, settings, headlines
-│  ├─ scheduling.py            schtasks registration
-│  ├─ diagnostics.py           the checks behind `doctor`
-│  ├─ probe.py                 selector diagnostics behind `inspect`
-│  ├─ results.py               Status / ErrorKind / RunResult
-│  ├─ lock.py  config.py
-│  ├─ driver/
-│  │  ├─ selectors.py          EVERY selector, fallback-chained
-│  │  ├─ profile.py            page operations
-│  │  └─ session.py            browser lifecycle, login detection
-│  └─ dashboard/
-│     ├─ app.py                FastAPI routes
-│     ├─ chart.py              hand-rolled SVG activity grid
-│     ├─ templates/index.html
-│     └─ static/style.css
-│
-├─ tests/                      133 tests; fixtures are synthetic
-└─ data/                       state.db, screenshots/, debug/   (gitignored)
-```
-
-Session state lives in `%LOCALAPPDATA%\NaukriAutopilot\`, **not** `data/` — see
-[Security model](#6-security-model). Test fixtures are synthetic by rule: a real page
-capture contains the user's name, location and resume filename.
-
 ---
 
-## 14. Open questions
+## Open questions
+
 
 1. ~~Does a byte-identical resume re-upload move the timestamp?~~ **Answered — YES.**
    Measured 2026-09-14: `22Jul , 2026` → `Today`, resume date `Feb 23` → `Sep 14`, with a
@@ -535,7 +573,7 @@ literal string `Today` — not `14Sep , 2026`. Older profiles render an absolute
 treat any non-`Today` value as "needs updating" rather than enumerating the vocabulary.
 
 This is why verification asserts `== "Today"` instead of diffing before against after
-(see [Run lifecycle](#3-run-lifecycle)). Day granularity means a same-day second run shows no diff at all, and a
+(see [Run lifecycle](#run-lifecycle)). Day granularity means a same-day second run shows no diff at all, and a
 comparison-based check would call a perfectly good run `FAILED`.
 
 **Upload controls, and a trap:**
@@ -554,10 +592,12 @@ modal, not typing into an inline field. More work than assumed — and, once que
 came back YES, work that no longer needs doing.
 
 **Browser:** bundled Chromium is unusable for OAuth sign-in — Google refuses it outright.
-Brave works. See [Anti-detection posture](#7-anti-detection-posture).
+Brave works. See [Anti-detection posture](#anti-detection-posture).
 
 ---
 
 *Note: the local folder is spelled `naukari_autopilot`, while the GitHub repo and the
 Python package are both `naukri_autopilot`. Only the folder name carries the typo, and
 nothing depends on it — renaming the directory is safe whenever you feel like it.*
+
+

@@ -1,5 +1,5 @@
 /* Local only. No webfonts, no CDN - the page must work offline and make no
-   outbound request (README section 6). System font stack throughout. */
+   outbound request - see the README's Security model. System font stack. */
 
 :root {
   --bg: #fbfbfa;

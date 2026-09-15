@@ -48,7 +48,7 @@ def test_bucket_ignores_unparseable_timestamps():
 
 def test_render_produces_svg_without_external_references():
     """No CDN, no webfont, no <image href>. The page must work offline and make
-    no outbound request at all (README section 6)."""
+    no outbound request at all - see the README's Security model."""
     svg = chart.render([("2026-09-14T09:00:00+00:00", Status.SUCCESS)], today=TODAY)
     assert svg.startswith("<svg") and svg.endswith("</svg>")
     for bad in ("http://", "https://", "//cdn", "<script"):

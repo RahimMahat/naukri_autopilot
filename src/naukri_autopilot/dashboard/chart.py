@@ -1,8 +1,8 @@
 """Hand-rolled contribution-grid SVG.
 
 No chart library and no CDN - partly because the page must work offline, and
-partly because the privacy claim in README section 6 is absolute: the dashboard
-makes no outbound request of any kind. A charting library pulled from a CDN
+partly because the privacy claim in the README's Security model is absolute: the
+dashboard makes no outbound request of any kind. A charting library pulled from a CDN
 would quietly break that.
 
 Pure functions over a list of (date, status) pairs, so the layout is testable

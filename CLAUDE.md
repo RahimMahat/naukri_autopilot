@@ -68,7 +68,7 @@ status and, where a page existed, a screenshot. The scheduler decides *whether* 
 it; the runner owns *what happens* when it is called.
 
 **Phase status:** all five phases are done (0 recon, 1 driver, 2 state + scheduler,
-3 dashboard, 4 setup + scheduling). Every CLI command is live. See README section 12.
+3 dashboard, 4 setup + scheduling). Every CLI command is live. See README, Build order.
 
 ## Invariants — these are load-bearing, not style preferences
 
