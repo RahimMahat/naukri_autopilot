@@ -58,10 +58,10 @@ class Decision:
         if self.next_due_at is None:
             return "HOLD - {}".format(self.reason)
         delta = self.next_due_at - now
-        return "HOLD - {} (next in {})".format(self.reason, _humanize(delta))
+        return "HOLD - {} (next in {})".format(self.reason, humanize(delta))
 
 
-def _humanize(delta: timedelta) -> str:
+def humanize(delta: timedelta) -> str:
     secs = int(delta.total_seconds())
     if secs < 0:
         return "now"
@@ -182,7 +182,7 @@ def decide(now: datetime, state: SchedState, settings: Settings) -> Decision:
     if state.last_success_at is not None and now - state.last_success_at > interval * 2:
         return Decision(
             True,
-            "overdue by {}".format(_humanize(now - state.last_success_at)),
+            "overdue by {}".format(humanize(now - state.last_success_at)),
             trigger=Trigger.CATCHUP,
         )
 

@@ -223,8 +223,40 @@ def cmd_install_task(args) -> int:
 
     info = scheduling.query(args.name)
     if info.next_run:
-        print("\nNext fire: {}".format(info.next_run))
+        print("\nNext tick: {}  (heartbeat, not a run)".format(info.next_run))
+    print("Next run : {}".format(next_run_line()))
     return 0
+
+
+def next_run_line() -> str:
+    """When the profile is actually due, as opposed to when the task next wakes.
+
+    The two get confused constantly: the tick fires 96 times a day and almost
+    always decides to do nothing, so printing only the tick time reads as if a
+    run were seconds away.
+    """
+    from datetime import datetime, timezone
+
+    from . import store
+    from .scheduler import decide, humanize
+
+    conn = store.connect()
+    try:
+        now = datetime.now(timezone.utc)
+        decision = decide(now, store.sched_state(conn), store.settings(conn))
+    finally:
+        conn.close()
+
+    if decision.run:
+        return "due now - the next tick will fire it ({})".format(decision.reason)
+    if decision.next_due_at is None:
+        return "on hold - {}".format(decision.reason)
+    local = decision.next_due_at.astimezone()
+    return "{}  (in {}, {})".format(
+        local.strftime("%d-%m-%Y %H:%M:%S"),
+        humanize(decision.next_due_at - now),
+        decision.reason,
+    )
 
 
 def cmd_setup(args) -> int:

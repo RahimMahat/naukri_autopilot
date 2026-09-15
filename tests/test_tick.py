@@ -124,3 +124,25 @@ def test_locked_tick_does_not_poison_the_schedule(sandbox, fake_run):
     st = store.sched_state(sandbox)
     assert st.last_attempt_at is None
     assert st.consecutive_failures == 0
+
+
+# -- install-task output ----------------------------------------------------- #
+
+
+def test_next_run_line_reports_the_run_not_the_tick(sandbox):
+    """The tick time and the run time were routinely confused: the heartbeat
+    fires 96 times a day, so printing only `Next fire: 16:00` after a paragraph
+    about 24-hour intervals reads as if an upload were ten minutes away."""
+    store.record(sandbox, RunResult(
+        status=Status.SUCCESS, trigger=Trigger.SCHEDULE,
+        started_at=(T_NOW - timedelta(hours=1)).isoformat(),
+    ).finish(Status.SUCCESS, profile_ts="Today"))
+
+    line = cli.next_run_line()
+    assert "not due" in line
+    # 24h interval, success an hour ago, jitter capped at 45 min.
+    assert "in 23h" in line
+
+
+def test_next_run_line_says_due_now_before_the_first_run(sandbox):
+    assert "due now" in cli.next_run_line()
