@@ -23,31 +23,69 @@ def test_tick_command_quotes_the_interpreter():
     assert cmd.endswith("-m naukri_autopilot.cli tick")
 
 
-def test_create_args_use_minute_schedule():
-    args = scheduling.build_create_args(minutes=15)
+def test_create_args_register_from_xml():
+    args = scheduling.build_create_args(xml_path="t.xml")
     assert args[:2] == ["schtasks", "/Create"]
-    assert "/SC" in args and args[args.index("/SC") + 1] == "MINUTE"
-    assert args[args.index("/MO") + 1] == "15"
+    assert args[args.index("/XML") + 1] == "t.xml"
     assert "/F" in args
 
 
-def test_create_args_never_request_elevation_or_a_password():
+def test_task_runs_on_battery():
+    """The whole reason registration goes through XML.
+
+    `schtasks /Create` defaults to DisallowStartIfOnBatteries=true and
+    StopIfGoingOnBatteries=true. On a laptop that means the heartbeat never
+    fires unless mains power is connected, and it fails silently - the task
+    still registers and still looks healthy in `doctor`.
+    """
+    xml = scheduling.build_task_xml()
+    assert "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>" in xml
+    assert "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>" in xml
+
+
+def test_task_never_wakes_a_sleeping_machine():
+    """Catch-up covers a sleeping laptop; waking one to touch a job board
+    would be a rude thing for a background tool to do."""
+    assert "<WakeToRun>false</WakeToRun>" in scheduling.build_task_xml()
+
+
+def test_task_xml_is_well_formed_and_carries_the_interval():
+    """Malformed task XML fails inside schtasks with an unhelpful parse error,
+    so it is worth catching here instead."""
+    from xml.dom.minidom import parseString
+
+    doc_text = scheduling.build_task_xml(minutes=15)
+    # minidom cannot parse a UTF-16 declaration from a str; the file written
+    # for schtasks is encoded UTF-16 for real.
+    parsed = parseString(doc_text.replace('encoding="UTF-16"', 'encoding="UTF-8"'))
+    assert parsed.documentElement.tagName == "Task"
+    assert "<Interval>PT15M</Interval>" in doc_text
+
+
+def test_overlapping_ticks_are_dropped_not_queued():
+    assert "<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>" in         scheduling.build_task_xml()
+
+
+def test_action_runs_the_tick_command():
+    xml = scheduling.build_task_xml()
+    assert "<Arguments>-m naukri_autopilot.cli tick</Arguments>" in xml
+    assert "pythonw" in xml
+
+
+def test_never_requests_elevation_or_a_password():
     """User scope keeps setup to a single command with no admin prompt, and
     means no password is ever stored to run the task."""
-    args = scheduling.build_create_args()
-    assert "/RU" not in args
-    assert "/RP" not in args
-    assert "/RL" not in args
+    xml = scheduling.build_task_xml()
+    assert "<LogonType>InteractiveToken</LogonType>" in xml
+    assert "<RunLevel>LeastPrivilege</RunLevel>" in xml
+    assert "<UserId>" in xml
 
 
 def test_task_name_flows_through_every_command():
-    for build in (
-        scheduling.build_create_args,
-        scheduling.build_delete_args,
-        scheduling.build_query_args,
-    ):
+    for build in (scheduling.build_delete_args, scheduling.build_query_args):
         args = build("CustomName")
         assert args[args.index("/TN") + 1] == "CustomName"
+    assert "CustomName" in scheduling.build_task_xml("CustomName")
 
 
 def test_prefers_pythonw_to_avoid_console_flashes():
@@ -109,6 +147,12 @@ def test_register_reports_success(fake_schtasks):
     ok, _ = scheduling.register()
     assert ok
     assert fake_schtasks["args"][1] == "/Create"
+
+
+def test_register_cleans_up_its_temp_xml(fake_schtasks, monkeypatch, tmp_path):
+    monkeypatch.setattr(scheduling.tempfile, "gettempdir", lambda: str(tmp_path))
+    scheduling.register()
+    assert list(tmp_path.glob("*.xml")) == []
 
 
 def test_register_reports_failure(fake_schtasks):

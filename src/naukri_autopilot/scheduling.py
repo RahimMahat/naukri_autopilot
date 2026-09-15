@@ -11,8 +11,10 @@ requires.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,21 +42,90 @@ def tick_command(interpreter: "Path | None" = None) -> str:
     return '"{}" -m naukri_autopilot.cli tick'.format(exe)
 
 
-def build_create_args(
+# Registered from XML rather than plain `schtasks /Create` flags, for one
+# reason: the command-line form cannot set the battery policy, and its defaults
+# are DisallowStartIfOnBatteries=true and StopIfGoingOnBatteries=true. On a
+# laptop that means the heartbeat never fires unless mains power is connected -
+# and it fails silently, because the task still registers and still looks
+# healthy. This is a background tool for laptops; it has to run on battery.
+#
+# WakeToRun is deliberately left off. Waking a sleeping machine to touch a job
+# board is rude, and catch-up already covers it: the first tick after the lid
+# opens sees the run is overdue and fires it.
+_TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Keeps your Naukri profile fresh. Asks every {minutes} minutes whether a run is due; almost always the answer is no.</Description>
+    <URI>\\{name}</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <TimeTrigger>
+      <StartBoundary>{start}</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT{minutes}M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{user}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <WakeToRun>false</WakeToRun>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <ExecutionTimeLimit>PT30M</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{exe}</Command>
+      <Arguments>-m naukri_autopilot.cli tick</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def current_user() -> str:
+    domain = os.environ.get("USERDOMAIN", "")
+    user = os.environ.get("USERNAME", "")
+    return "{}\\{}".format(domain, user) if domain else user
+
+
+def build_task_xml(
     task_name: str = TASK_NAME,
     minutes: int = TICK_MINUTES,
     interpreter: "Path | None" = None,
+) -> str:
+    exe = interpreter or pythonw()
+    return _TASK_XML.format(
+        name=task_name,
+        minutes=minutes,
+        user=current_user(),
+        exe=str(exe),
+        # Any past instant works; the repetition is what actually drives it.
+        start="2026-01-01T00:00:00",
+    )
+
+
+def build_create_args(
+    task_name: str = TASK_NAME,
+    xml_path: "Path | None" = None,
 ) -> "list[str]":
-    return [
-        "schtasks", "/Create",
-        "/TN", task_name,
-        "/TR", tick_command(interpreter),
-        "/SC", "MINUTE",
-        "/MO", str(minutes),
-        # No /RU or /RP: runs as the current user, only while logged on, and
-        # needs neither elevation nor a stored password.
-        "/F",
-    ]
+    return ["schtasks", "/Create", "/TN", task_name, "/XML", str(xml_path), "/F"]
 
 
 def build_delete_args(task_name: str = TASK_NAME) -> "list[str]":
@@ -118,7 +189,21 @@ def register(
     minutes: int = TICK_MINUTES,
     interpreter: "Path | None" = None,
 ) -> "tuple[bool, str]":
-    code, out = _run(build_create_args(task_name, minutes, interpreter))
+    """Register the heartbeat. Writes the XML to a temp file schtasks can read.
+
+    The file is UTF-16: schtasks rejects UTF-8 task XML on some Windows builds
+    with an unhelpful parse error.
+    """
+    xml = build_task_xml(task_name, minutes, interpreter)
+    tmp = Path(tempfile.gettempdir()) / "naukri-autopilot-task.xml"
+    try:
+        tmp.write_text(xml, encoding="utf-16")
+        code, out = _run(build_create_args(task_name, tmp))
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
     return code == 0, out.strip()
 
 

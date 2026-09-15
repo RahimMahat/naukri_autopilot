@@ -294,6 +294,22 @@ enter the retry ladder: the session cannot recover without a human, so retrying 
 burns attempts. The normal cadence still applies, which means the tool heals itself on
 the next cycle once the user signs in again.
 
+**Is a 15-minute heartbeat expensive?** No. A tick that decides "not due" costs about
+105 ms of CPU: start the interpreter, read a few rows from SQLite, compare two
+timestamps, exit. No browser, no network. Across 96 ticks that is roughly **10 seconds of
+CPU per day** — less than loading a couple of web pages. The browser only starts on the
+one tick per interval that actually runs.
+
+**The task must run on battery.** Windows' default for a `schtasks`-created task is
+`DisallowStartIfOnBatteries=true` and `StopIfGoingOnBatteries=true`, which on a laptop
+means the heartbeat never fires unless mains power is connected — silently, because the
+task still registers and still looks healthy. Both are explicitly set to `false`, which
+is why registration goes through task XML instead of command-line flags.
+
+`WakeToRun` stays **off** on purpose. Waking a sleeping laptop to touch a job board would
+be a rude thing for a background tool to do, and catch-up already covers it: the first
+tick after the lid opens sees the run is overdue and fires it.
+
 **Jitter must be deterministic per cycle.** It is derived by hashing the anchor
 timestamp, not drawn fresh each tick. A new random offset on every 15-minute heartbeat
 would leave the due time perpetually a few minutes away, and the run would never fire.
@@ -457,7 +473,7 @@ that a one-file fix instead of an archaeology expedition.
 | SQLite via stdlib `sqlite3` | Single file, zero setup, survives crashes. An ORM would be dead weight at this size. |
 | FastAPI + uvicorn + Jinja2 | Local-only dashboard; typed routes for free. Flask would be equally fine. |
 | No chart/JS libraries | Offline-capable, and keeps the no-outbound-calls promise literally true. |
-| Windows Task Scheduler | Native, survives reboot, no background process to babysit. Registered via `schtasks` at user scope — no admin prompt, no stored password. |
+| Windows Task Scheduler | Native, survives reboot, no background process to babysit. Registered from task XML at user scope — no admin prompt, no stored password. XML rather than plain `schtasks` flags because the flag form cannot set the battery policy, and its default is to never run on battery. |
 | `pythonw.exe` for the tick | `python.exe` would flash a console window 96 times a day, which is the fastest way to get a background tool uninstalled. Costs a console to log to, hence `data/tick.log` as a last resort. |
 
 ---
