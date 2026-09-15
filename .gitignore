@@ -17,3 +17,6 @@ dist/
 # editors
 .vscode/
 .idea/
+
+# PowerShell "2>$null" creates a literal file of this name on Windows
+$null

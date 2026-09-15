@@ -1,8 +1,0 @@
-﻿schtasks : ERROR: The system cannot find the file specified.
-At line:13 char:46
-+ ... `n(probe task deleted: $(-not (schtasks /Query /TN $name 2>`$null)))"
-+                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (ERROR: The syst...file specified.:String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
- 
-
