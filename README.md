@@ -64,15 +64,22 @@ system-wide, so until you activate it the name is not on `PATH`.
 | cmd.exe | `.venv\Scripts\activate.bat` |
 | Git Bash | `source .venv/Scripts/activate` |
 
-After that the tool is just its name:
+After that the tool is just its name. The full command set:
 
-```
-naukri-autopilot login        # sign in to Naukri yourself, once
-naukri-autopilot dashboard    # the control panel
-naukri-autopilot doctor       # what is wrong, and the command that fixes it
-naukri-autopilot status       # schedule state and recent runs
-naukri-autopilot install-task # arm the 15-minute heartbeat
-```
+| Command | What it does |
+|---|---|
+| `login` | Opens a real browser so you sign in to Naukri yourself. Once per ~180 days. |
+| `dashboard` | The control panel on `127.0.0.1:8765`. Start here. |
+| `doctor` | What is wrong, and the exact command that fixes each thing. |
+| `status` | Schedule state, the next decision, and recent runs. |
+| `run` | Update the profile now. `--dry-run` resolves everything and uploads nothing; `--headed` shows the browser. |
+| `install-task` | Arm the 15-minute heartbeat. Add `--remove` to disarm. |
+| `config` | Read or write one setting: `config interval_hours 12`. No arguments lists them all. |
+| `inspect` | Read-only selector check. Run this when a run fails with `SELECTOR_MISS` — see [Build order](#build-order). |
+| `setup` | The first-run checklist, same items the dashboard shows. |
+| `tick` | "Is a run due?" Task Scheduler calls this every 15 minutes; you rarely run it by hand. |
+
+Every one of them accepts `--help`.
 
 Don't want to activate? Use the full path — identical behaviour, no activation:
 
@@ -297,30 +304,38 @@ would leave the due time perpetually a few minutes away, and the run would never
 
 ## Data model (SQLite)
 
+One file at `data/state.db`. Two tables — the schema below is what `store.py`
+actually creates.
 
 ```sql
 CREATE TABLE runs (
   id            INTEGER PRIMARY KEY,
   started_at    TEXT NOT NULL,      -- ISO-8601, UTC
   finished_at   TEXT,
-  status        TEXT NOT NULL,      -- SUCCESS | FAILED | NEEDS_LOGIN | SKIPPED_* | DRY_RUN
+  status        TEXT NOT NULL,      -- SUCCESS | FAILED | NEEDS_LOGIN
+                                    -- | SKIPPED_LOCKED | DRY_RUN
   trigger       TEXT NOT NULL,      -- schedule | manual | catchup | retry
-  headline_used TEXT,
-  profile_ts    TEXT,               -- "last updated" string read back from the page
+  headline_used TEXT,               -- headline as read at run time
+  profile_ts    TEXT,               -- "last updated" read back from the page
   error_kind    TEXT,               -- SESSION_EXPIRED | SELECTOR_MISS | UPLOAD_REJECTED
-                                    -- | NETWORK | CHALLENGE | UNKNOWN
+                                    -- | NETWORK | CHALLENGE | RESUME_MISSING | UNKNOWN
   error_detail  TEXT,
-  screenshot    TEXT                -- relative path
+  screenshot    TEXT,               -- path relative to the project root
+  already_fresh INTEGER NOT NULL DEFAULT 0   -- profile already read "Today"
 );
+CREATE INDEX runs_started ON runs(started_at DESC);
+CREATE INDEX runs_status  ON runs(status, started_at DESC);
 
-CREATE TABLE settings  (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-
-CREATE TABLE headlines (id INTEGER PRIMARY KEY, text TEXT NOT NULL,
-                        position INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 ```
 
-`settings` keys: `interval_hours`, `resume_path`, `rotate_headline`, `quiet_start`,
-`quiet_end`, `headed_mode`, `screenshot_retention`, `last_headline_index`.
+`settings` keys: `interval_hours`, `resume_path`, `quiet_start`, `quiet_end`,
+`headed_mode`, `screenshot_retention`, `schema_version`. Read them with
+`naukri-autopilot config`.
+
+`already_fresh` records that the profile said `Today` *before* the run started. The
+run still succeeded, but it proved nothing about its own upload — worth distinguishing
+when reading history.
 
 Timestamps stored UTC, rendered local. The user's machine will change timezones (travel,
 DST) and the schedule must not jump when it does.
